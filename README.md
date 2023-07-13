@@ -1,3 +1,5 @@
 # gigas_microhap_panel
 
-Repository for all analyses within the microhaplotype discovery project using the amplicon panel developed by Sutherland et al. (2023)
+Microhaplotype analysis of marker panel developed by Sutherland et al. using new populations from USDA and existing samples from initial panel development effort.
+
+Details of the intial panel can be found in Sutherland et al. (2023)
