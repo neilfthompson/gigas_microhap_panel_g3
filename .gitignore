@@ -1,0 +1,10 @@
+*~
+*.txt
+*.csv
+*.xls
+*.xlsx
+*.fastq.gz
+*.fastq
+*.bam*
+*.sam*
+
