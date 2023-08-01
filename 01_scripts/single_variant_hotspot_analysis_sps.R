@@ -1,0 +1,377 @@
+# Analyze the Pacific oyster genepop
+#  will use the simple_pop_stats repository
+#  initialized 2023-07-31 (B. Sutherland)
+
+# update the variable in the simple_pop_stats_start.R initiator script
+# on_network <- FALSE # change to FALSE if off-network
+# Then clear workspace and source simple pop stats
+# Choose Pacific oyster, then exit the menu
+
+input.FN <- "02_input_data/R_2023_07_03_12_36_08_user_S5XL-00533-1229-USDA_OYSTER_20230702_gen_data.gen"
+
+#### 01. Load data ####
+load_genepop(datatype = "SNP")
+
+#### 02. Prepare data ####
+##### 02.1 Manually assign population names based on samples present #####
+## Create a list of individuals for manual addition of population
+indiv.df <- as.data.frame(indNames(obj))
+colnames(indiv.df) <- "indiv"
+head(indiv.df)
+
+# Separate components of indiv ID (i.e., run, barcode, sample)
+indiv.df <- separate(data = indiv.df, col = "indiv", into = c("run", "barcode", "indiv"), sep = "__", remove = T)
+head(indiv.df)
+
+# Use reduced indiv name as indname in genind
+indNames(obj) <- indiv.df$indiv
+
+# How many samples from each run? 
+table(indiv.df$run)
+
+# Prepare to write out clean text file to add pop attribute per sample
+indiv.df <- as.data.frame(indiv.df[, "indiv"])
+colnames(indiv.df) <- "indiv"
+indiv.df$pop <- NA # Add dummy column to fill manually
+head(indiv.df)
+
+# Write out empty file to provide pop names
+write.table(x = indiv.df, file = "02_input_data/my_data_ind-to-pop.txt"
+            , sep = "\t", col.names = T, row.names = F
+            , quote = F
+)
+
+# In folder above, *manually annotate* the output file above
+# , save with "_annot.txt" appended, populate with pop names (no spaces)
+
+# Load annotated df
+indiv_annot.df <- read.table(file = "02_input_data/my_data_ind-to-pop_annot.txt"
+                             , header = T, sep = "\t"
+                             #, quote = F
+)
+
+## Update population names
+# Merge with the population annotation, do not sort
+indiv_annot_in_order.df <- merge(x = indiv.df, indiv_annot.df, by = "indiv"
+                                 , all.x = T, sort = FALSE # very necessary line
+)
+
+head(indiv_annot_in_order.df)
+
+# Observe order remained same as (x) above
+head(cbind(indiv_annot_in_order.df, indiv.df), n = 10)
+tail(cbind(indiv_annot_in_order.df, indiv.df), n = 10)
+
+### TODO: add data-check in this step###
+# # Write a little test to be sure
+# test <- cbind(indNames(obj), indiv_annot_in_order.df$indiv)
+# table(test[,1] == test[ ,2])
+# 
+# # test <- cbind(indNames(obj), sort(indiv_annot_in_order.df$indiv))
+# # table(test[,1] == test[ ,2])
+# ## /END/ ##
+
+# Assign the pop IDs to the genind
+pop(obj) <- indiv_annot_in_order.df$pop.y
+table((pop(obj)))
+
+
+##### 02.2 Add in population colours #####
+## Population colours
+colours <- matrix(c("spat", "broodstock", "blue", "magenta"), nrow = 2, ncol = 2)
+colnames(colours) <- c("my.pops", "my.cols")
+colours
+
+
+#### 03. Characterize missing data (indiv and loci) and filter ####
+# Set variables to use for both plots
+plot_width <- 8
+plot_height <- 5
+plot_cex <- 0.85
+plot_pch <- 16
+
+##### 03.1 Individuals - missing data #####
+percent_missing_by_ind(df = obj)
+head(missing_data.df)
+
+# Add pop IDs to the missing data df
+missing_data.df <- merge(x = missing_data.df, y = indiv_annot.df, by.x = "ind", by.y = "indiv", all.x = T)
+head(missing_data.df)
+
+# Add colours to the missing data df
+colours
+plot_cols.df <- merge(x = missing_data.df, y = colours, by.x = "pop", by.y = "my.pops", all.x = T
+                      , sort = F
+)
+head(plot_cols.df)
+
+# Plot missing data by individual
+pdf(file = "03_results/geno_rate_by_ind.pdf", width = plot_width, height = plot_height)
+plot(100 * (1 - plot_cols.df$ind.per.missing), ylab = "Genotyping rate (%)"
+     , col = plot_cols.df$my.cols
+     , las = 1
+     , xlab = "Individual"
+     , ylim = c(0,100)
+     , pch=plot_pch
+     , cex = plot_cex
+)
+
+abline(h = 50, lty = 3)
+
+legend("bottomleft", legend = unique(plot_cols.df$pop)
+       , fill = unique(plot_cols.df$my.cols)
+       , cex = 0.7
+       , bg = "white"
+)
+dev.off()
+
+# Filter individuals by missing data
+obj.df <- missing_data.df
+head(obj.df)
+
+keep <- obj.df[obj.df$ind.per.missing < 0.5, "ind"]
+
+length(keep)
+nInd(obj)
+
+obj.filt <- obj[(keep)]
+obj.filt
+
+# Samples remaining after filters
+table(pop(obj.filt))
+
+
+##### 03.2 Loci - missing data #####
+# Filter loci based on missing data
+obj.df <- genind2df(obj.filt)
+obj.df[1:5,1:5]
+obj.df <- t(obj.df)
+obj.df[1:5,1:5]
+obj.df <- obj.df[2:nrow(obj.df),] # remove pop row
+obj.df[1:5,1:5]
+dim(obj.df)
+str(obj.df)
+
+obj.df <- as.data.frame(obj.df)
+dim(obj.df)
+str(obj.df)
+obj.df[1:5,1:5] # See top left of file
+obj.df[(dim(obj.df)[1]-5):dim(obj.df)[1], (dim(obj.df)[2]-5):dim(obj.df)[2]] # See bottom right of file
+
+# Add collector col
+obj.df$marker.per.missing <- NA
+
+for(i in 1:(nrow(obj.df))){
+  
+  # Per marker                      sum all NAs for the marker, divide by total number markers
+  obj.df$marker.per.missing[i] <-  (sum(is.na(obj.df[i,]))-1) / (ncol(obj.df)-1) 
+  
+}
+
+
+# Plot missing data by marker
+pdf(file = "03_results/geno_rate_by_marker.pdf", width = plot_width, height = plot_height)
+plot(100 * (1- obj.df$marker.per.missing), xlab = "Marker", ylab = "Genotyping rate (%)", las = 1
+     , ylim = c(0,100)
+     , pch = plot_pch
+     , cex = plot_cex
+)
+abline(h = 50
+       #, col = "grey60"
+       , lty = 3)
+dev.off()
+
+# Filter markers by genotyping rate
+keep <- rownames(obj.df[obj.df$marker.per.missing < 0.5, ])
+
+# How many loci will be removed? 
+nLoc(obj.filt)
+nLoc(obj.filt) - length(keep)
+
+# Drop loci from genind
+obj.all.filt <- obj.filt[, loc=keep]
+
+# Rename back to obj
+obj <- obj.all.filt
+
+
+##### 03.3 Drop monomorphic loci #####
+drop_loci(df = obj, drop_monomorphic = TRUE) # drops 51 monomorphic markers
+
+obj <- obj_filt
+
+
+##### 03.4 Post-QC info collection #####
+obj
+
+## View the ind or loc names
+inds <- indNames(obj)
+loci <- locNames(obj)
+
+# Save out which individuals have passed the filters
+write.table(x = inds, file = "03_results/retained_individuals.txt", sep = "\t", quote = F
+            , row.names = F, col.names = F
+)
+
+write.table(x = loci, file = "03_results/retained_loci.txt", sep = "\t", quote = F
+            , row.names = F, col.names = F
+)
+
+
+##### 03.5 per marker stats and filters #####
+# MAF information
+maf_filt(data = obj, maf = 0.01)
+head(myFreq)
+
+pdf(file = "03_results/maf_freq.pdf", width = 7, height = 5)
+hist(myFreq, breaks = 20, main = "", xlab = "MAF", las = 1)
+dev.off()
+
+obj <- obj_maf_filt
+
+## Per locus statistics
+per_locus_stats(data = obj)
+head(per_loc_stats.df)
+
+
+# Plot Fst by Hobs
+pdf(file = "per_locus_Fst_v_Hobs.pdf", width = 8, height = 5) 
+plot(per_loc_stats.df$Fst, per_loc_stats.df$Hobs
+     , las = 1
+     , xlab = "Per locus FST"
+     , ylab = "Per locus HOBS"
+     , pch = 16
+     , cex = 0.85
+)
+dev.off()
+
+table(per_loc_stats.df$Hobs > 0.5) 
+
+# Not dropping any loci based on HWP or HOBS at this time, given the non-random selection of individuals
+
+
+##### 03.5 Post-all filters #####
+# Save out colours to be used downstream
+colours
+colnames(x = colours) <- c("collection", "colour")
+write.csv(x = colours, file = "00_archive/formatted_cols.csv", quote = F, row.names = F)
+
+
+#### 04. Analysis ####
+# PCA from genind
+pca_from_genind(data = obj
+                , PCs_ret = 4
+                , plot_eigen = TRUE
+                , plot_allele_loadings = TRUE
+                , retain_pca_obj = TRUE
+                , colour_file = "00_archive/formatted_cols.csv"
+)
+
+
+## Prepare an eigenvalue plot for inset
+num_eigenvals <- 10
+vals.df <- as.data.frame(pca.obj$eig[1:num_eigenvals])
+colnames(vals.df)[1] <- "vals"
+vals.df$pc <- seq(1:num_eigenvals)
+vals.df
+colnames(vals.df) <- c("PVE", "PC")
+
+# Express eigenvalues as a percentage of total variation explained
+tot.var <- sum(pca.obj$eig)
+vals.df$PVE <- vals.df$PVE/tot.var *100
+
+# eig.plot <- barplot(vals, col = "darkgrey", main = paste0("Eigenvalues 1:", num_eigenvals) , las = 1)
+# eig.plot
+
+# Barplot of eigenvalues
+eig.plot <- ggplot(data = vals.df, aes(x=PC, y=PVE)) + 
+  geom_bar(stat = "identity") + 
+  theme(axis.text.x=element_blank() #remove x axis labels
+        , axis.ticks.x=element_blank() #remove x axis ticks
+        #, axis.text.y=element_blank()  #remove y axis labels
+        #, axis.ticks.y=element_blank()  #remove y axis ticks
+        #, axis.title = element_blank()
+        , panel.background = element_blank()
+  )
+#eig.plot <- eig.plot + theme_bw()
+eig.plot
+
+
+## Plot
+# Legend within plot
+# pc1_v_pc2.plot  <- pc1_v_pc2.plot + theme(legend.justification = c(1,0), legend.position = c(1,0)
+#                              , legend.background = element_rect(colour = "black", fill = "white", linetype = "solid")
+#                              )
+# pc1_v_pc2.plot
+
+# Remove legend pc1 v pc2
+pc1_v_pc2.plot  <- pc1_v_pc2.plot + theme(legend.position = "none")
+pc1_v_pc2.plot  <- pc1_v_pc2.plot + annotation_custom(ggplotGrob(eig.plot)
+                                                      , xmin = 0.5, xmax = 3
+                                                      , ymin = -3.75, ymax = -2.5
+)
+
+pc1_v_pc2.plot
+
+
+
+
+# Legend inside panel second plot
+pc3_v_pc4.plot <- pc3_v_pc4.plot + theme(legend.justification = c(1,0), legend.position = c(1,0)
+                                         , legend.background = element_rect(colour = "black", fill = "white", linetype = "solid")
+)
+
+# # Inset panel, second plot
+# pc3_v_pc4.plot + annotation_custom(ggplotGrob(eig.plot)
+#                                    , xmin = 1, xmax = 7
+#                                    , ymin = -15, ymax = -6
+#                                    )
+#install.packages("ggpubr")
+library("ggpubr")
+final.figure <- ggarrange(pc1_v_pc2.plot, pc3_v_pc4.plot
+                          , labels = c("A", "B")
+                          , ncol = 2, nrow = 1
+)
+
+
+pdf(file = "03_results/pca_composite_figure.pdf", width = 12, height = 6.5)
+print(final.figure)
+dev.off()
+
+
+####### Convert genepop to Rubias format #####
+# Need to create a tab-delim stock code file in format of e.g., 
+## row 1: collection	repunit
+## row 2: boundary_bay	lower_mainland
+
+# Here we will just create a df based on existing populations where collection = repunit
+stock_code.df <- as.data.frame(unique(pop(obj)))
+colnames(stock_code.df) <- "collection"
+stock_code.df$repunit <- stock_code.df$collection
+stock_code.df
+
+# Write it out
+write_delim(x = stock_code.df, file = "00_archive/stock_code.txt", delim = "\t", col_names = T)
+micro_stock_code.FN <- "00_archive/stock_code.txt"
+# this is for annotate_rubias(), for an unknown reason it requires the name micro_stock_code.FN
+
+## Convert genepop to rubias
+datatype <- "SNP" # required for genepop_to_rubias_SNP
+as.data.frame(cbind(indNames(obj), as.character(pop(obj)))) # Note: BR27 should be VIU_F0 [confirmed]
+obj # the current analysis object
+
+genepop_to_rubias_SNP(data = obj, sample_type = "reference", custom_format = TRUE, micro_stock_code.FN = micro_stock_code.FN)
+
+print("Your output is available as '03_results/rubias_output_SNP.txt")
+
+file.copy(from = "03_results/rubias_output_SNP.txt", to = "../amplitools/03_results/cgig_all_rubias.txt", overwrite = T)
+
+# Using this output, move to "amplitools/01_scripts/ckmr_from_rubias.R"
+ckmr_from_rubias(input.FN = "03_results/cgig_all_rubias.txt", parent_pop = "broodstock"
+                 , offspring_pop = "spat", cutoff = 5
+                 )
+
+
+
+
+
