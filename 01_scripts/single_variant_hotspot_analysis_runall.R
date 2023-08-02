@@ -11,9 +11,10 @@
 proton_to_genepop(hotspot_only = TRUE, neg_control = "BLANK")
 
 # Go to terminal and finalize the genepop using
-# 01_scripts/format_genepop.sh
+# 01_scripts/format_genepop.sh 02_input_data/prepped_matrices/R_2023_07_03_12_36_08_user_S5XL-00533-1229-USDA_OYSTER_20230702_gen_data.txt
 
-# Copy the output to simple_pop_stats input folder
-# once complete, you will have a file 'amplitools/03_results/cgig_all_rubias.txt'
+# Copy the output 
+# 02_input_data/prepped_genepops/R_2023_07_03_12_36_08_user_S5XL-00533-1229-USDA_OYSTER_20230702_gen_data.gen
+# to simple_pop_stats input folder 02_input_data
 
-# source 00_initiator.R again
+# Move to the next script, gigas_microhap_panel/01_scripts/single_variant_hotspot_analysis_sps.R
