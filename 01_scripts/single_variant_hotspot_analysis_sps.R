@@ -375,3 +375,19 @@ ckmr_from_rubias(input.FN = "03_results/cgig_all_rubias.txt", parent_pop = "broo
                  , offspring_pop = "spat", cutoff = 5
                  )
 
+# Plot the output results
+graph_relatives(input.FN = "03_results/po_broodstock_vs_spat_pw_logl_5.txt", logl_cutoff = 5
+                , drop_string = "G00", directed = F, plot_width = 5, plot_height = 5
+                )
+
+graph_relatives(input.FN = "03_results/po_broodstock_vs_spat_pw_logl_5.txt", logl_cutoff = 10
+                , drop_string = "G00", directed = F, plot_width = 5, plot_height = 5
+)
+
+graph_relatives(input.FN = "03_results/offsp_fs_spat_pw_logl_5.txt", logl_cutoff = 5
+                , drop_string = "G00", directed = F, plot_width = 5, plot_height = 5
+)
+
+graph_relatives(input.FN = "03_results/parent_fs_broodstock_pw_logl_5.txt", logl_cutoff = 10
+                , drop_string = "G00", directed = F, plot_width = 5, plot_height = 5
+)
