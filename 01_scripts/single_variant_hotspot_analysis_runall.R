@@ -7,6 +7,15 @@
 
 # Source the 00_initiator.R 
 
+# Load data
+load_vc(input_folder = "02_input_data")
+head(`R_2023_07_03_12_36_08_user_S5XL-00533-1229-USDA_OYSTER_20230702.df`)
+# note: Region.Name is present
+
+# Rough estimate of MAF for target and novel variants (note: assumes no missing data)
+tally_to_freq(df = `R_2023_07_03_12_36_08_user_S5XL-00533-1229-USDA_OYSTER_20230702.df`, allele_source = "novel")
+
+
 # Convert input to a prepped matrix
 proton_to_genepop(hotspot_only = TRUE, neg_control = "BLANK")
 
