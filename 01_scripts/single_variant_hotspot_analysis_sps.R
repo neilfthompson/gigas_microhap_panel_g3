@@ -391,3 +391,7 @@ graph_relatives(input.FN = "03_results/offsp_fs_spat_pw_logl_5.txt", logl_cutoff
 graph_relatives(input.FN = "03_results/parent_fs_broodstock_pw_logl_5.txt", logl_cutoff = 10
                 , drop_string = "G00", directed = F, plot_width = 5, plot_height = 5
 )
+
+# Generate report from the output of CKMR-sim
+prep_report(relationship = "PO")
+
