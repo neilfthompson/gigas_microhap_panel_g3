@@ -3,7 +3,7 @@
 
 # update the following variable in the simple_pop_stats initiator script (i.e., simple_pop_stats/01_scripts/simple_pop_stats_start.R)
 ## on_network <- FALSE # change to FALSE if off-network
-# Clear the workspace and source the simple_pop_stats initiator script
+# Clear the workspace and source the simple_pop_stats initiator script "01_scripts/simple_pop_stats_start.R"
 # Choose Pacific oyster, then exit the menu
 
 # Set user variables
@@ -236,7 +236,7 @@ head(per_loc_stats.df)
 
 
 # Plot Fst by Hobs
-pdf(file = "per_locus_Fst_v_Hobs.pdf", width = 8, height = 5) 
+pdf(file = "03_results/per_locus_Fst_v_Hobs.pdf", width = 8, height = 5) 
 plot(per_loc_stats.df$Fst, per_loc_stats.df$Hobs
      , las = 1
      , xlab = "Per locus FST"
@@ -259,86 +259,88 @@ write.csv(x = colours, file = "00_archive/formatted_cols.csv", quote = F, row.na
 
 
 #### 04. Analysis ####
-# PCA from genind
-pca_from_genind(data = obj
-                , PCs_ret = 4
-                , plot_eigen = TRUE
-                , plot_allele_loadings = TRUE
-                , retain_pca_obj = TRUE
-                , colour_file = "00_archive/formatted_cols.csv"
-)
 
-
-## Prepare an eigenvalue plot for inset
-num_eigenvals <- 10
-vals.df <- as.data.frame(pca.obj$eig[1:num_eigenvals])
-colnames(vals.df)[1] <- "vals"
-vals.df$pc <- seq(1:num_eigenvals)
-vals.df
-colnames(vals.df) <- c("PVE", "PC")
-
-# Express eigenvalues as a percentage of total variation explained
-tot.var <- sum(pca.obj$eig)
-vals.df$PVE <- vals.df$PVE/tot.var *100
-
-# eig.plot <- barplot(vals, col = "darkgrey", main = paste0("Eigenvalues 1:", num_eigenvals) , las = 1)
+### /EDIT/ No PCA without screening out related individuals first ###
+# # PCA from genind
+# pca_from_genind(data = obj
+#                 , PCs_ret = 4
+#                 , plot_eigen = TRUE
+#                 , plot_allele_loadings = TRUE
+#                 , retain_pca_obj = TRUE
+#                 , colour_file = "00_archive/formatted_cols.csv"
+# )
+# 
+# 
+# ## Prepare an eigenvalue plot for inset
+# num_eigenvals <- 10
+# vals.df <- as.data.frame(pca.obj$eig[1:num_eigenvals])
+# colnames(vals.df)[1] <- "vals"
+# vals.df$pc <- seq(1:num_eigenvals)
+# vals.df
+# colnames(vals.df) <- c("PVE", "PC")
+# 
+# # Express eigenvalues as a percentage of total variation explained
+# tot.var <- sum(pca.obj$eig)
+# vals.df$PVE <- vals.df$PVE/tot.var *100
+# 
+# # eig.plot <- barplot(vals, col = "darkgrey", main = paste0("Eigenvalues 1:", num_eigenvals) , las = 1)
+# # eig.plot
+# 
+# # Barplot of eigenvalues
+# eig.plot <- ggplot(data = vals.df, aes(x=PC, y=PVE)) + 
+#   geom_bar(stat = "identity") + 
+#   theme(axis.text.x=element_blank() #remove x axis labels
+#         , axis.ticks.x=element_blank() #remove x axis ticks
+#         #, axis.text.y=element_blank()  #remove y axis labels
+#         #, axis.ticks.y=element_blank()  #remove y axis ticks
+#         #, axis.title = element_blank()
+#         , panel.background = element_blank()
+#   )
+# #eig.plot <- eig.plot + theme_bw()
 # eig.plot
-
-# Barplot of eigenvalues
-eig.plot <- ggplot(data = vals.df, aes(x=PC, y=PVE)) + 
-  geom_bar(stat = "identity") + 
-  theme(axis.text.x=element_blank() #remove x axis labels
-        , axis.ticks.x=element_blank() #remove x axis ticks
-        #, axis.text.y=element_blank()  #remove y axis labels
-        #, axis.ticks.y=element_blank()  #remove y axis ticks
-        #, axis.title = element_blank()
-        , panel.background = element_blank()
-  )
-#eig.plot <- eig.plot + theme_bw()
-eig.plot
-
-
-## Plot
-# Legend within plot
-# pc1_v_pc2.plot  <- pc1_v_pc2.plot + theme(legend.justification = c(1,0), legend.position = c(1,0)
-#                              , legend.background = element_rect(colour = "black", fill = "white", linetype = "solid")
-#                              )
+# 
+# 
+# ## Plot
+# # Legend within plot
+# # pc1_v_pc2.plot  <- pc1_v_pc2.plot + theme(legend.justification = c(1,0), legend.position = c(1,0)
+# #                              , legend.background = element_rect(colour = "black", fill = "white", linetype = "solid")
+# #                              )
+# # pc1_v_pc2.plot
+# 
+# # Remove legend pc1 v pc2
+# pc1_v_pc2.plot  <- pc1_v_pc2.plot + theme(legend.position = "none")
+# pc1_v_pc2.plot  <- pc1_v_pc2.plot + annotation_custom(ggplotGrob(eig.plot)
+#                                                       , xmin = -4, xmax = -2
+#                                                       , ymin = 2, ymax = 4
+# )
+# 
 # pc1_v_pc2.plot
-
-# Remove legend pc1 v pc2
-pc1_v_pc2.plot  <- pc1_v_pc2.plot + theme(legend.position = "none")
-pc1_v_pc2.plot  <- pc1_v_pc2.plot + annotation_custom(ggplotGrob(eig.plot)
-                                                      , xmin = -4, xmax = -2
-                                                      , ymin = 2, ymax = 4
-)
-
-pc1_v_pc2.plot
-
-
-
-
-# Legend inside panel second plot
-pc3_v_pc4.plot <- pc3_v_pc4.plot + theme(legend.justification = c(1,0), legend.position = c(1,0)
-                                         , legend.background = element_rect(colour = "black", fill = "white", linetype = "solid")
-)
-
-# # Inset panel, second plot
-# pc3_v_pc4.plot + annotation_custom(ggplotGrob(eig.plot)
-#                                    , xmin = 1, xmax = 7
-#                                    , ymin = -15, ymax = -6
-#                                    )
-#install.packages("ggpubr")
-library("ggpubr")
-final.figure <- ggarrange(pc1_v_pc2.plot, pc3_v_pc4.plot
-                          , labels = c("A", "B")
-                          , ncol = 2, nrow = 1
-)
-
-
-pdf(file = "03_results/pca_composite_figure.pdf", width = 12, height = 6.5)
-print(final.figure)
-dev.off()
-
+# 
+# 
+# 
+# 
+# # Legend inside panel second plot
+# pc3_v_pc4.plot <- pc3_v_pc4.plot + theme(legend.justification = c(1,0), legend.position = c(1,0)
+#                                          , legend.background = element_rect(colour = "black", fill = "white", linetype = "solid")
+# )
+# 
+# # # Inset panel, second plot
+# # pc3_v_pc4.plot + annotation_custom(ggplotGrob(eig.plot)
+# #                                    , xmin = 1, xmax = 7
+# #                                    , ymin = -15, ymax = -6
+# #                                    )
+# #install.packages("ggpubr")
+# library("ggpubr")
+# final.figure <- ggarrange(pc1_v_pc2.plot, pc3_v_pc4.plot
+#                           , labels = c("A", "B")
+#                           , ncol = 2, nrow = 1
+# )
+# 
+# 
+# pdf(file = "03_results/pca_composite_figure.pdf", width = 12, height = 6.5)
+# print(final.figure)
+# dev.off()
+### /END/ No PCA without screening out related individuals first ###
 
 ####### Convert genepop to Rubias format #####
 # Need to create a tab-delim stock code file in format of e.g., 
@@ -367,31 +369,26 @@ print("Your output is available as '03_results/rubias_output_SNP.txt")
 
 file.copy(from = "03_results/rubias_output_SNP.txt", to = "../amplitools/03_results/cgig_all_rubias.txt", overwrite = T)
 
-
-# Clear space, and launch amplitools initiator
+#### Parentage Analysis ####
+# Clear space, and launch amplitools initiator (i.e., 01_scripts/00_initiator.R)
 
 # Using this output, move to "amplitools/01_scripts/ckmr_from_rubias.R"
 ckmr_from_rubias(input.FN = "03_results/cgig_all_rubias.txt", parent_pop = "broodstock"
                  , offspring_pop = "spat", cutoff = 5
                  )
 
+# Generate report from the output of CKMR-sim
+prep_report(relationship = "PO")
+
 # Plot the output results
 graph_relatives(input.FN = "03_results/po_broodstock_vs_spat_pw_logl_5.txt", logl_cutoff = 5
                 , drop_string = "G00", directed = F, plot_width = 5, plot_height = 5
                 )
 
-graph_relatives(input.FN = "03_results/po_broodstock_vs_spat_pw_logl_5.txt", logl_cutoff = 10
+graph_relatives(input.FN = "03_results/fs_offsp_spat_pw_logl_5.txt", logl_cutoff = 5
                 , drop_string = "G00", directed = F, plot_width = 5, plot_height = 5
 )
 
-graph_relatives(input.FN = "03_results/offsp_fs_spat_pw_logl_5.txt", logl_cutoff = 5
+graph_relatives(input.FN = "03_results/fs_parent_broodstock_pw_logl_5.txt", logl_cutoff = 10
                 , drop_string = "G00", directed = F, plot_width = 5, plot_height = 5
 )
-
-graph_relatives(input.FN = "03_results/parent_fs_broodstock_pw_logl_5.txt", logl_cutoff = 10
-                , drop_string = "G00", directed = F, plot_width = 5, plot_height = 5
-)
-
-# Generate report from the output of CKMR-sim
-prep_report(relationship = "PO")
-
