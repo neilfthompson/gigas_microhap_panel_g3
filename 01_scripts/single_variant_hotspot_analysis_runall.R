@@ -7,23 +7,13 @@
 
 # Source the 00_initiator.R 
 
-# Load data
-load_vc(input_folder = "02_input_data")
-head(`R_2023_07_03_12_36_08_user_S5XL-00533-1229-USDA_OYSTER_20230702.df`)
-# note: Region.Name is present
-
-# Rough estimate of MAF for target and novel variants (note: assumes no missing data)
-tally_to_freq(df = `R_2023_07_03_12_36_08_user_S5XL-00533-1229-USDA_OYSTER_20230702.df`, allele_source = "novel")
-
-
-# Convert input to a prepped matrix
+# Load data, and convert input to a prepped matrix
 proton_to_genepop(hotspot_only = TRUE, neg_control = "BLANK")
 
-# Go to terminal and finalize the genepop using
+## Go to terminal and finalize the genepop using
 # 01_scripts/format_genepop.sh 02_input_data/prepped_matrices/R_2023_07_03_12_36_08_user_S5XL-00533-1229-USDA_OYSTER_20230702_gen_data.txt
 
-# Copy the output 
-# 02_input_data/prepped_genepops/R_2023_07_03_12_36_08_user_S5XL-00533-1229-USDA_OYSTER_20230702_gen_data.gen
-# to simple_pop_stats input folder 02_input_data
+## In terminal, copy the output to simple_pop_stats
+# cp 02_input_data/prepped_genepops/*.gen ../simple_pop_stats/02_input_data/
 
 # Move to the next script, gigas_microhap_panel/01_scripts/single_variant_hotspot_analysis_sps.R
