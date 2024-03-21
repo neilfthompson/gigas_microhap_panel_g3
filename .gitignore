@@ -7,4 +7,5 @@
 *.fastq
 *.bam*
 *.sam*
+.DS_Store
 

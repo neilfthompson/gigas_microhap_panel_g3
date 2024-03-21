@@ -1,11 +1,10 @@
-# gigas_microhap_panel
+# Analysis of single SNP or microhaplotypes in C. gigas panel #
+Microhaplotype analysis of marker panel developed by Sutherland et al. using new populations from USDA and existing samples from initial panel development effort.
 
 #### Requirements 
 - [amplitools](https://github.com/bensutherland/amplitools)       
 - [simple_pop_stats](https://github.com/bensutherland/simple_pop_stats/tree/master)     
 
-
-Microhaplotype analysis of marker panel developed by Sutherland et al. using new populations from USDA and existing samples from initial panel development effort.
 
 Details of the initial panel can be found in Sutherland et al. (2023)
 
@@ -31,4 +30,24 @@ Interactively run the script `gigas_microhap_panel/01_scripts/single_variant_hot
 - prepare a CKMR object
 - assess cutoffs for CKMR for sibship (offspring, parents) or parent-offspring relationships
 - output putative parent-offspring or sibship pairs
+
+
+### Pilot study: comparison of single SNP and microhaplotype approaches ###
+Using the samples from the pilot study in the Vancouver Island University (VIU) breeding program (F0-F2), a comparative approach is taken to determine the relative power of parentage through the following approaches:        
+1. Hotspot approach: use the target SNP of the Cgig_v.1.0 panel, but genotype directly from the panel's fastq data;    
+2. Top SNP approach: identify and use the SNP within each amplicon that has the highest observed heterozygosity;       
+3. Microhaplotype approach: genotype microhaplotypes from all amplicons.       
+
+ 
+Steps required to obtain called variants and microhaplotypes for each of the above approaches are described in detail in the [amplitools microhaplotype README](https://github.com/bensutherland/amplitools/blob/main/20_docs/README_mhap.md), but steps specific to this project will be outlined here.          
+
+Use the above README to conduct the following:    
+- prepare an amplicon-only reference genome;   
+- align samples against the reference;    
+- call variants from the alignments;     
+- conduct quality filtering on variants;     
+- call microhaplotypes from the filtered variants. 
+
+
+
 
