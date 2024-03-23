@@ -1,89 +1,14 @@
-# Exploring mhaps; requires that amplitargets is cloned and at same level as amplitools
+# Compare hotspot SNP to top HOBS SNP, part 3
+# note: requires that part 2 was run and '03_results/comparison_loci.txt' is present in amplitools
 # Ben Sutherland
-# 2024-03-18
+# initialized 2024-03-18
 
 # Clear space
 # rm(list=ls())
 
-# Set working directory
-setwd("~/Documents/00_sbio/GBMF_UBC_Pacific_oyster/amplicon_panel_mhap/amplitools")
+# Source amplitools via the initiator
 
 # Load libraries
-library(vcfR)
-library(adegenet)
-library(tidyr)
-
-# Set variables
-vcf.FN <- "14_extract_mhap/mpileup_calls_SNP_only_biallelic_q20_dp10_Fmiss_0.1_w_AF_maf0.01.vcf"
-hotspot.FN <- "../amplitargets/cgig/current/WGAG22008_BJS_OYRv01_Hotspot_A.bed"
-regions.FN <- "../amplitargets/cgig/current/WGAG22008_BJS_OYRv01_Region_A.bed"
-
-
-#### 01. Load amplicon panel files ####
-# Load hotspot file
-hotspot.df <- read.delim2(file = hotspot.FN, skip = 1, header = F)
-head(hotspot.df)
-colnames(hotspot.df) <- c("contig", "target.pos.start", "target.pos.end", "mname", "extra", "strand", "alleles", "type")
-head(hotspot.df)
-
-# Load regions file
-regions.df <- read.delim2(file = regions.FN, skip = 1, header = F)
-head(regions.df)
-colnames(regions.df) <- c("contig", "amplicon.start", "amplicon.end", "SP.val", "extra", "assorted")
-head(regions.df)
-
-
-#### 02. Create hotspot identifier corresponding to VCF file identifier ####
-# note: VCF file identifier: e.g., JH816222_1:110-279_7
-
-## Identifier build requires hotspot and regions files
-head(hotspot.df)
-head(regions.df)
-
-# Prepare regions file fields for merging
-regions.df <- separate(data = regions.df, col = "assorted", into = c("GENE_ID", "Pool"), sep = ";", remove = T)
-regions.df <- separate(data = regions.df, col = "GENE_ID", into = c("GENE_ID_prefix", "GENE_ID"), sep = "=", remove = T)
-head(regions.df) # GENE_ID allows you to match to the hotspot file
-
-# Prepare hotspot file fields for merging
-hotspot.df$mname <- as.character(hotspot.df$mname)
-str(hotspot.df)
-
-# Confirm all prepared
-nrow(hotspot.df) # 592
-length(intersect(x = regions.df$GENE_ID, y = hotspot.df$mname)) # 590
-setdiff(x = regions.df$GENE_ID, y = hotspot.df$mname) # something odd here, but only impacts two loci
-setdiff(y = regions.df$GENE_ID, x = hotspot.df$mname) # something odd here, but only impacts two loci
-
-# Merge
-hotspot_data.df <- merge(x = hotspot.df, y = regions.df, by.x = "mname", by.y = "GENE_ID")
-head(hotspot_data.df)
-str(hotspot_data.df)
- 
-
-## Create identifier for hotspots to match VCF file naming (see above)
-hotspot_data.df$expect.name <- paste0(gsub(pattern = "\\.", replacement = "_", x = hotspot_data.df$contig.x)
-                                      , ":", hotspot_data.df$amplicon.start, "-", hotspot_data.df$amplicon.end
-                                        , "_", hotspot_data.df$target.pos.end - hotspot_data.df$amplicon.start)
-head(hotspot_data.df)
-
-
-#### 03. Load empirical data ####
-my_vcf <- read.vcfR(file = vcf.FN)
-
-# Convert vcf to genind
-my_data.genind <- vcfR2genind(x = my_vcf)
-head(locNames(my_data.genind))
-head(indNames(my_data.genind))
-
-# How many of the hotspot file sites were observed in the empirical data? 
-empirical_sites.vec <- locNames(my_data.genind)
-length(intersect(x = hotspot_data.df$expect.name, y = empirical_sites.vec)) # 339 only in both
-comparison_loci <- intersect(x = hotspot_data.df$expect.name, y = empirical_sites.vec)
-head(comparison_loci)
-# note: since the empirical approach is not identifying all of the hotspots, use the default approach
-#  with the empirical chip to conduct standard hotspot workflow
-
 
 #### 04. Annotate data, remove duplicates ####
 # source simple_pop_stats without clearing space
@@ -122,12 +47,12 @@ head(popmap_filler.df)
 dim(popmap_filler.df)
 
 popmap_filler.df <-          merge(popmap_filler.df, barcode_interp.df, all.x = T, by.x = "ind.present", by.y = "Barcode"
-                                     , sort = F)
+                                   , sort = F)
 head(popmap_filler.df)
 dim(popmap_filler.df) # 192
 
 popmap_filler.df   <-  merge(x = popmap_filler.df, y = sample_interp.df, by.x = "Sample.Name", by.y = "indiv"
-                              , all.x = T, sort = F)
+                             , all.x = T, sort = F)
 head(popmap_filler.df)
 dim(popmap_filler.df) # 192
 
@@ -148,7 +73,7 @@ tail(x = cbind(ind.present, popmap_filler.df), n = 5)
 # Read in the annotated popmap
 annotate_from_popmap(df = obj, popmap.FN = "00_archive/my_data_ind-to-pop_annot.txt"
                      , convert_to_alt_ID = TRUE
-                     )
+)
 
 indNames(obj_annot)
 pop(obj_annot)
@@ -264,8 +189,8 @@ head(comparison.df)
 
 # Get the Hobs for these loci
 comparison.df <- merge(x = comparison.df, y = per_loc_hobs.df, by.x = "hotspot_locus", by.y = "mname"
-                    , sort = F
-                    )
+                       , sort = F
+)
 head(comparison.df)
 
 comparison.df$max_hobs <- NA
@@ -294,7 +219,7 @@ plot(x = comparison.df$Hobs, y = comparison.df$max_hobs
      , las = 1
      , ylab = "amplicon max HOBS"
      , xlab = "amplicon hotspot HOBS"
-     )
+)
 
 save.image(file = "prepared_filtered.RData")
 
