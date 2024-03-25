@@ -23,9 +23,18 @@ barcode_interp.FN <- "~/Documents/00_sbio/GBMF_UBC_Pacific_oyster/amplicon_panel
 sample_interp.FN <- "~/Documents/00_sbio/GBMF_UBC_Pacific_oyster/amplicon_panel_mhap/00_archive/GBMF_pilot_my_data_ind-to-pop_annot_2023-05-01.txt"
 
 
+comp_loci.df <- read.table(file = "03_results/comparison_loci.txt", header = F)
+head(comp_loci.df)
+comp_loci.df <-separate(data = comp_loci.df, col = "V1", into = c("contig", "middle", "SNP.pos")
+                    , sep = "_", remove = F)
+head(comp_loci.df)
+comp_loci.df$amplicon <- paste0(comp_loci.df$contig, "_", comp_loci.df$middle)
+head(comp_loci.df)
+comp_loci.df$amplicon <- gsub(pattern = "_|:|-", replacement = "", x = comp_loci.df$amplicon)
 
 #### 01. Prepare mtype2 output for EFGLmh input ####
-mhap.FN <- "14_extract_mhap/genos.txt"
+#mhap.FN <- "14_extract_mhap/genos.txt" # full mhaps
+mhap.FN <- "14_extract_mhap/genos_hotspots.txt" # hotspot SNP only
 mhap.df <- read.delim(file = mhap.FN, header = T)
 dim(mhap.df)
 head(mhap.df)
@@ -95,15 +104,57 @@ mh.dat
 allele_rich <- aRich(mh.dat)
 head(allele_rich)
 hist(table(allele_rich$aRich))
-### IDENTIFY MULTIMAPPERS HERE ####
 
+### IDENTIFY MULTIMAPPERS HERE ####
+str(mh.dat)
 
 # Remove bad loci (too much missing?)
 # Remove bad inds (too much missing?)
 
+head(getLoci(x = mh.dat))
+head(comp_loci.df)
+# Which loci are in the mh.dat but not in the comparable loci? 
+remove <- setdiff(x = getLoci(x = mh.dat), y = comp_loci.df$amplicon) 
+mh.dat <- removeLoci(mh.dat, lociRemove = remove)
+
+nloc <- length(getLoci(mh.dat))
 
 # , then convert to rubias
 parentage_baseline <- exportRubias_baseline(x = mh.dat, pops = c("VIU_F1", "VIU_F2"), repunit = "Pop", collection = "Pop")
+parentage_baseline[1:5,1:5]
+
+
+
+#write_delim(x = parentage_baseline, file = paste0("03_results/rubias_mhaps_", nloc, "_2024-03-23.txt"), delim = "\t")
+write_delim(x = parentage_baseline, file = paste0("03_results/rubias_mhaps_hotspot", nloc, "_2024-03-23.txt"), delim = "\t")
+
+# Set user variables
+hotspot_rubias.FN <-"03_results/rubias_mhaps_hotspot373_2024-03-23.txt"
+parent_pop <- "VIU_F1"
+offspring_pop <- "VIU_F2"
+cutoff <- 5
+
+## Parentage with hotspot comparables
+# Prepare run folder
+date <- format(Sys.time(), "%Y-%m-%d")
+input_rubias_short.FN <- gsub(pattern = "03_results/", replacement = "", x = hotspot_rubias.FN)
+input_rubias_short.FN <- gsub(pattern = ".txt", replacement = "", x = input_rubias_short.FN)
+
+run_folder.FN <- paste0("03_results/ckmr_input_", input_rubias_short.FN, "_"
+                        , offspring_pop, "_vs_", parent_pop,"_", nloc, "_", date
+)
+print("Making new result folder...")
+print(run_folder.FN)
+dir.create(run_folder.FN)
+
+# Run ckmr on the input file
+ckmr_from_rubias(input.FN = hotspot_rubias.FN
+                 , parent_pop = parent_pop
+                 , offspring_pop = offspring_pop
+                 , cutoff = 5
+                 , output.dir = run_folder.FN
+)
+
 
 # , then amplitools ckmr-sim wrapper
 # May come across issues with the naming of .A1 and .A2, but this should be easy to fix, e.g., to .01 and .02
