@@ -69,4 +69,25 @@ head(hotspot_data.df)
 
 write.table(x = hotspot_data.df, file = "03_results/hotspot_data.txt", sep = "\t", quote = F, col.names = T, row.names = F)
 
+#### Create position file based on hotspots ####
+hotspot_data.df$pos.Locus <- paste0(hotspot_data.df$contig.x, ":", hotspot_data.df$amplicon.start, "-", hotspot_data.df$amplicon.end)
+#hotspot_data.df[hotspot_data.df$contig.x=="JH816222.1",]
+hotspot_data.df$pos.RefPos <- hotspot_data.df$target.pos.end - hotspot_data.df$amplicon.start
+hotspot_data.df$pos.Type <- rep("S", times = nrow(hotspot_data.df))
+
+hotspot_data.df <- separate(data = hotspot_data.df, col = "alleles", into = c("REF", "ALT", "ANCHOR"), sep = ";", remove = F)
+head(hotspot_data.df)
+
+hotspot_data.df$pos.ValidAlt <- gsub(pattern = "OBS=", replacement = "", x = hotspot_data.df$ALT)
+
+# Now can make a position file with this info
+position_file.df <- hotspot_data.df[, c("pos.Locus", "pos.RefPos", "pos.Type", "pos.ValidAlt")]
+head(position_file.df)
+
+colnames(position_file.df) <- gsub(pattern = "pos.", replacement = "", x = colnames(position_file.df))
+write.table(x = position_file.df, file = "14_extract_mhap/position_file_hotspots.txt"
+            , sep = "\t", row.names = F, col.names = T, quote = F
+            )
+
+
 # Next, go to 01_scripts/hotspot_vs_top_hobs_02_.R
