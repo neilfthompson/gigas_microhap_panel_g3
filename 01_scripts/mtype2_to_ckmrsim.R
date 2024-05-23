@@ -32,9 +32,10 @@ comp_loci.df$amplicon <- paste0(comp_loci.df$contig, "_", comp_loci.df$middle)
 head(comp_loci.df)
 comp_loci.df$amplicon <- gsub(pattern = "_|:|-", replacement = "", x = comp_loci.df$amplicon)
 
+
 #### 01. Prepare mtype2 output for EFGLmh input ####
-#mhap.FN <- "14_extract_mhap/genos.txt" # full mhaps
-mhap.FN <- "14_extract_mhap/genos_hotspots.txt" # hotspot SNP only
+mhap.FN <- "14_extract_mhap/genos.txt" # full mhaps
+#mhap.FN <- "14_extract_mhap/genos_hotspots.txt" # hotspot SNP only
 mhap.df <- read.delim(file = mhap.FN, header = T)
 dim(mhap.df)
 head(mhap.df)
@@ -100,10 +101,63 @@ wideformat.df[1:10, 1:10]
 mh.dat <- readInData(input = wideformat.df, pedigreeColumn = "Pop"
                     , nameColumn = "indiv") # into EFGLmh format
 mh.dat
+length(getInds(mh.dat)) # 212 inds
 
+# Number of alleles per locus
 allele_rich <- aRich(mh.dat)
 head(allele_rich)
-hist(table(allele_rich$aRich))
+
+pdf(file = "03_results/frequency_of_alleles_per_amplicon_hist.pdf", width = 9, height = 4)
+hist(allele_rich$aRich, breaks = 100, main = "", las = 1
+     , xlab = "Number alleles per amplicon"
+     )
+
+text(x = 25, y = 45, labels = paste0("Total amplicons: ", nrow(allele_rich)))
+dev.off()
+
+table(allele_rich$aRich==1)
+hist(table(allele_rich$aRich), breaks = 30, las = 1)
+
+# What are the multimappers? 
+multimappers.FN <- "~/Documents/00_sbio/GBMF_UBC_Pacific_oyster/amplicon_panel/pilot_study/identify_multimappers/counts_per_locus.txt"
+multimappers.df <- read.delim(file = multimappers.FN, header = F, sep = " ")
+head(multimappers.df)
+multimappers.df <- multimappers.df[,c("V7", "V8")]
+head(multimappers.df)
+# locus name to positional name (JH816222.1:10-279)
+hotspot.FN <- "../amplitargets/cgig/current/WGAG22008_BJS_OYRv01_Hotspot_A.bed"
+regions.FN <- "../amplitargets/cgig/current/WGAG22008_BJS_OYRv01_Region_A.bed"
+hotspot.df <- read.table(file = hotspot.FN, header = F, sep = "\t", skip = 1)
+regions.df <- read.table(file = regions.FN, header = F, sep = "\t", skip = 1)
+dim(hotspot.df)
+head(hotspot.df)
+head(regions.df)
+regions.df <- separate(data = regions.df, col = "V6", into = c("GENE_ID_and_mname", "pool"), sep = ";")
+regions.df <- separate(data = regions.df, col = "GENE_ID_and_mname", into = c("GENE_ID", "mname"), sep = "=")
+head(regions.df)
+hotspot_region.df <- merge(x = hotspot.df, y = regions.df, by.x = "V4", by.y = "mname")
+head(hotspot_region.df)
+
+hotspot_region.df$matcher <- paste0(hotspot_region.df$V1.x, ":", hotspot_region.df$V2.y, "-", hotspot_region.df$V3.y)
+head(hotspot_region.df)
+hotspot_region.df$matcher_no_char  <- gsub(pattern = "\\.|\\:|\\-", replacement = "", x = hotspot_region.df$matcher)
+head(hotspot_region.df)
+
+remove_multimappers.df <- multimappers.df[multimappers.df$V7 > 1, ]
+head(remove_multimappers.df)
+data.df <- merge(x = remove_multimappers.df, y = hotspot_region.df, by.x = "V8", by.y = "V4", all.x = T)
+data.df
+remove_multimappers <- data.df$matcher_no_char
+remove_multimappers
+
+mh.dat
+drop_loci <- intersect(x = getLoci(mh.dat), y = remove_multimappers)
+mh_nomulti.dat <- removeLoci(mh.dat, lociRemove = drop_loci)
+
+allele_rich <- aRich(mh_nomulti.dat)
+head(allele_rich)
+hist(table(allele_rich$aRich), breaks = 50)
+
 
 ### IDENTIFY MULTIMAPPERS HERE ####
 str(mh.dat)
@@ -127,6 +181,8 @@ parentage_baseline[1:5,1:5]
 
 #write_delim(x = parentage_baseline, file = paste0("03_results/rubias_mhaps_", nloc, "_2024-03-23.txt"), delim = "\t")
 write_delim(x = parentage_baseline, file = paste0("03_results/rubias_mhaps_hotspot", nloc, "_2024-03-23.txt"), delim = "\t")
+
+#### PROBABLY SHOULD BE SECOND SCRIPT HERE 
 
 # Set user variables
 hotspot_rubias.FN <-"03_results/rubias_mhaps_hotspot373_2024-03-23.txt"
