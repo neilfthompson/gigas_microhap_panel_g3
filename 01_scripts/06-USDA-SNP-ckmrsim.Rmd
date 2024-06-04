@@ -1,0 +1,305 @@
+---
+title: "hotspot-snp-ckmrsim"
+author: "Neil Thompson"
+date: "2023-12-19"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+## ckmrsim relatedness analysis using thermo hotspot files
+
+```{r}
+library(tidyverse)
+library(CKMRsim)
+library(knitr)
+library(kableExtra)
+library(readxl)
+```
+
+#read in thermo hotspot data
+```{r, load-geno-data}
+hot_snps <- read_xls("../data_thermofisher/thermofisher-gigas-agriseq-hotspot-snp.xls") %>% rename(loc = 1) 
+
+hot_long <- hot_snps %>% 
+  pivot_longer(-loc,names_to = "thermo_id", values_to = "geno") %>%
+  filter(!geno=="./.") %>%
+  mutate(indiv_id = str_extract(thermo_id, "G[0-9]{6}")) %>%
+  separate(geno, into =c("1","2"), sep =1 ) %>%
+  dplyr::select(-thermo_id) %>%
+  pivot_longer(-c("loc", "indiv_id"), names_to = "gene_copy", values_to = "allele")
+```
+
+load chrom_pos, filter out multi_mappers, retain loci in the microhap data
+```{r, load-mapping-loci-data}
+sam <- read.table("../data/sutherland_snp_panel_bowtie2_map.sam", 
+                  header = FALSE, sep = "\t", fill = TRUE)
+
+loci2keep <- sam %>%
+  group_by(V1) %>%
+  mutate(n_aligns = n()) %>% ungroup() %>%
+  filter(n_aligns==1, #select single mappers
+         str_detect(V3, "^NC_"))  %>% #select chrom mappers
+  dplyr::select(V1, V3, V4, V6)
+
+mapped_loci <- read_tsv("../data-microtyper/sutherland_usda_read_counts.txt") %>%
+  filter(!Allele=="noReads") %>% distinct(Locus) %>% pull(Locus) #this is loci present in microtyper processing of fastqs
+
+long_chrompos <- hot_long %>% 
+  filter(loc %in%loci2keep$V1, #keep single mapping chrom mappers
+         loc %in% mapped_loci) %>% #retain loci in microhaplotype data
+  left_join(., loci2keep, by=c("loc"="V1")) %>%
+  mutate(chrom_pos = paste0("NC", str_sub(V3, 4, -3), "_", V4)) %>%
+  dplyr::select(indiv_id, chrom_pos, gene_copy, allele)
+```
+
+find crappy samples and remove.
+Make vector of indiv_id with 75% genos or less
+
+```{r, id-poor-samples}
+tot_loci <- long_chrompos %>% distinct(chrom_pos) %>% nrow(.) #481 loci remain
+
+indiv2chuck<- long_chrompos %>% count(indiv_id) %>%
+  mutate(pct_scored = (n/tot_loci*0.5)%>%round(., 3)) %>%
+  arrange(pct_scored) %>%
+  filter(pct_scored<0.75) %>%
+  pull(indiv_id)
+```
+
+
+id crappy loci --> scored in less than 85 pct of indivs
+```{r}
+n_indiv <- long_chrompos %>% filter(!indiv_id%in%indiv2chuck) %>%
+  distinct(indiv_id) %>% nrow(.)
+
+loci2chuck<- long_chrompos %>%
+  group_by(indiv_id, chrom_pos) %>% 
+  slice(1) %>% ungroup() %>%
+  filter(!indiv_id %in% indiv2chuck) %>%
+  count(chrom_pos) %>%
+  mutate(pct_scored = n/n_indiv) %>% arrange(pct_scored) %>%
+filter(pct_scored<0.85) %>%
+  pull(chrom_pos)
+```
+
+make a CKMR df, remove indivs2chuck and loci2chuck then move into simulations
+
+df with Indiv, Locus, gene_copy, and Allele columns
+
+```{r, ckmr-genos-df}
+long_genos <- long_chrompos %>%
+  filter(!indiv_id %in% indiv2chuck, #indiv missing filter
+         !chrom_pos %in% loci2chuck) %>% #locus missing data filter
+  rename(Indiv = indiv_id, 
+         Locus = chrom_pos,
+         Allele = allele)
+
+head(long_genos,5)
+
+long_genos %>% distinct(Locus) %>% nrow(.) #375 loci retained after filtering
+```
+
+how many loci are monomorphic?
+```{r}
+loci_monomorphs <- long_genos %>% 
+  group_by(Locus) %>%
+  summarise(n_allele = n_distinct(Allele)) %>%
+  filter(n_allele==1) %>% ungroup()
+
+nrow(loci_monomorphs)
+
+#are these present in the MH dataset?
+mh_genos <- readRDS("../data-ckmr/ckmr-long-genos-microhaps-filtered.rds")
+
+loci_monomorphs %>%
+  mutate(mh_loci = Locus%in%mh_genos$Locus) %>% count(mh_loci)
+```
+
+thats a lot of monomorphic loci.  47 of em after tossing the crappy loci already.
+
+
+make allele freqs
+```{r, gen-allele-freqs}
+ckmr_genos <- long_genos %>% 
+  filter(!Locus%in%loci_monomorphs$Locus) %>% #remove monomorphic loci
+  filter(!is.na(Indiv))
+
+alle_freqs <- ckmr_genos %>% 
+  count(Locus, Allele) %>%
+  group_by(Locus) %>%
+  mutate(Freq = n / sum(n),
+         Chrom = "Unk",
+         Pos = cur_group_id()) %>%
+  ungroup() %>%
+  select(Chrom, Pos, Locus, Allele, Freq) %>%
+  arrange(Pos, desc(Freq)) %>%
+  mutate(AlleIdx = NA,
+         LocIdx = NA) %>%
+  filter(!is.na(Allele))
+```
+
+index the AF data and move on.
+```{r, index-AF}
+afreqs_ready <- reindex_markers(alle_freqs)
+```
+
+simulate relationships and calc logls.
+```{r, sim-relats}
+ex1_snp <- create_ckmr(
+  D = afreqs_ready,
+  kappa_matrix = kappas[c("PO", "FS", "AN", "U"), ],
+  ge_mod_assumed = ge_model_TGIE,
+  ge_mod_true = ge_model_TGIE,
+  ge_mod_assumed_pars_list = list(epsilon = 0.005),
+  ge_mod_true_pars_list = list(epsilon = 0.005)
+)
+
+ex1_snp#328 loci left. that matches what I expected from above.
+
+ex1_Qs <- simulate_Qij(ex1_snp, 
+                       calc_relats = c("PO", "FS","AN", "U"), #assumed relationships
+                       sim_relats = c("PO", "FS", "AN", "U") ) # true relationships
+```
+
+FPR at FNR of 0.01 for PO-U
+```{r,PO-U-fpr}
+#estimate FPR with PO_U relats
+mc_sample_simple(ex1_Qs, 
+                 nu = "PO",
+                 de = "U")
+```
+PO-AN false positive rate
+```{r, fpr-po-an}
+mc_sample_simple(ex1_Qs, 
+                 nu = "PO",
+                 de = "AN")
+```
+
+PO-FS false positive rates
+```{r, fpr-po-FS}
+mc_sample_simple(ex1_Qs, 
+                 nu = "PO",
+                 de = "FS")
+```
+
+FPR calculations done
+
+calc logl distributions from simulation and plot em
+```{r}
+PO_U_snps <- extract_logls(ex1_Qs,
+                            numer = c(PO = 1),
+                            denom = c(U = 1))
+
+snp_logls <- ggplot(PO_U_snps,
+            aes(x = logl_ratio, fill = true_relat)) +
+  geom_density(alpha = 0.25) +
+  scale_x_continuous(limits=c(-400,225), name="") +
+  scale_y_continuous(name = "density") +
+  annotate("text", label = "SNP", x = -300, y = 0.0425, size = 6)
+
+snp_logls
+
+#save this for making figure
+#saveRDS(snp_logls, "../tmp-plot-hotspotSNP-usda-logl-dist.RDS") 
+```
+
+Check for duplicate samples before parentage
+
+find duplicate samples
+```{r}
+find_close_matching_genotypes(LG = ckmr_genos,
+                                          CK = ex1_snp,
+                                          max_mismatch = 5)
+
+ckmr_genos %>% filter(Indiv %in% c("G005498", "G005499")) %>%
+  count(Indiv)
+```
+This is a known duplicate sample from MH analysis. I'll toss G005499 since is 
+has a few less loci scored.
+
+do the Parent-Kid comparisons
+```{r,ckmrsim-PO-comparisons}
+meta_pops <- read_xlsx("../data/thermofisher-sutherland-allsamples_metadata.xlsx", 
+                       sheet = "metadata_pops")
+
+brood_samples <- meta_pops %>%
+  filter(life_stage=="broodstock") %>%
+  filter(!indiv_id == "G005499") %>% #remove duplicate
+  pull(indiv_id)
+
+spat_samples <- meta_pops %>%
+  filter(str_detect(life_stage, "spat")) %>%
+  pull(indiv_id)
+
+candidate_parents <- ckmr_genos %>% 
+  filter(Indiv %in% brood_samples)
+
+candidate_offspring <- ckmr_genos %>% 
+  filter(Indiv %in% spat_samples)
+
+po_pairwise_logls <- pairwise_kin_logl_ratios(D1 = candidate_parents, 
+                                              D2 = candidate_offspring, 
+                                              CK = ex1_snp,
+                                              numer = "PO",
+                                              denom = "U")
+
+po_pairwise_logls %>% head(20)
+```
+
+plot the results 
+plot the results with brood sex included
+```{r, plot-PO}
+meta_po <- read_xlsx("../data/thermofisher-sutherland-allsamples_metadata.xlsx", 
+                     sheet = "metadata_PO")
+brood_sex <- meta_po %>%
+  dplyr::select(indiv_id, sire, dam) %>%
+  pivot_longer(-1, names_to = "sex", values_to = "brood_id")
+
+brood_fams <- meta_pops %>%
+  dplyr::select(indiv_id, fam, pop) %>%
+  mutate(fam_corrected = 
+           case_when(
+             str_detect(fam, "^2016") ~ paste0("2016-", str_sub(fam,-2,-1)),
+             str_detect(fam, "^YC") ~ fam, 
+             str_detect(fam, "^W") ~ fam,
+             str_detect(fam, "^[0-9]{2}_") ~ paste0(str_sub(fam,1,6)),
+             str_detect(fam, "^F") ~ fam,
+           )) %>%
+  dplyr::select(-fam)
+
+spat2broodfam <- brood_sex %>%
+  left_join(., brood_fams, by=c("brood_id" = "indiv_id")) %>%
+  dplyr::select(indiv_id, sex, fam_corrected) %>%
+  pivot_wider(., values_from = "fam_corrected", names_from = "sex")
+
+po_snp_plot <- po_pairwise_logls %>%
+  left_join(., brood_sex, by =c("D1_indiv" = "brood_id", "D2_indiv"="indiv_id")) %>%
+  arrange(D2_indiv, desc(logl_ratio)) %>%
+  group_by(D2_indiv) %>%
+  left_join(., brood_fams, by =c("D1_indiv" = "indiv_id")) %>%
+  left_join(., spat2broodfam, by =c("D2_indiv" = "indiv_id")) %>%
+  mutate(rel_type = case_when(
+    sex%in%c("sire", "dam") ~ "PO",
+    is.na(sex)&(fam_corrected==sire|fam_corrected==dam) ~ "AN",
+    !(fam_corrected==sire|fam_corrected==dam) ~ "U")) %>%
+  ggplot(., aes(x=D2_indiv,y=logl_ratio, colour = rel_type, fill=rel_type)) +
+           geom_point()  +
+  scale_y_continuous(name = "log likelihood ratio", limits = c(-550,175), breaks = seq(-550,150,50))+
+  scale_x_discrete(name = "kids") +
+  theme_light() +
+  theme(axis.text.x = element_text(angle = 65, vjust = 1.1, hjust=1.15))
+
+po_snp_plot
+#saveRDS(po_snp_plot, "../tmp-plot-hotspotSNP-usda-PO-logl-dist.RDS")
+```
+
+save assignments to file to compare with mhap and MAF-snp analyses
+```{r, save-PO-assignments}
+po_pairwise_logls %>%
+  arrange(D2_indiv, desc(logl_ratio)) #%>%
+  #saveRDS(., "../data-ckmr/ckmr-po-hotspot-USDA.rds", compress="xz")
+```
+
+#Le Fin.

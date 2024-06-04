@@ -1,0 +1,278 @@
+---
+title: "check-mhap-target-snp-MAF-assignments"
+author: "Neil Thompson"
+date: "2024-04-17"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+## check to see if microhaplotype assignments match the target SNP assignment
+
+```{r}
+library(tidyverse)
+library(knitr)
+library(kableExtra)
+library(readxl)
+```
+
+#load assignments 
+```{r, load-assignments}
+mhap <- readRDS("../data-microtyper/USDA-ckmr-microhap-PO-assignments.rds") %>%
+  dplyr::select(-"relationship_class") %>%
+  pivot_longer(sire:dam, names_to="sex", values_to = "brood_id") %>%
+  mutate(marker = "microhaplotype") %>%
+  filter(!is.na(brood_id))
+  
+snp <- readRDS("../data-ckmr/ckmr-po-hotspot-USDA.rds") %>%
+  mutate(marker = "snp_target")
+
+mhap_logls <- readRDS("../data-microtyper/USDA-ckmr-microhap-logl-values-allpairwisecomps.rds") %>%
+  rename(mhap_logl = logl_ratio,
+            mhap_num_loc = num_loc)
+```
+
+How many juveniles are in MH assignments?
+```{r}
+mhap %>% filter(!is.na(brood_id)) %>%distinct(kid) #50 kids, 2 kids didnt pass QC
+mhap_logls%>%distinct(D2_indiv) #53 kids in the full MH data set
+50/53 #microhap assignment rate 
+mhap %>% count(kid) %>%ungroup() %>% count(n) #trios
+```
+
+did the top two SNP assignments match the microhap assignments?
+```{r}
+snp %>% group_by(D2_indiv) %>%
+  slice(1:2) %>%
+  ungroup() %>%
+  left_join(mhap, . , by =c("kid"="D2_indiv", "brood_id" = "D1_indiv")) %>% #join mh assignments to snp assignments asking did the snp get the same answer as the mhap?
+  arrange(kid) %>%
+  filter(is.na(logl_ratio))
+```
+
+
+why are these discordant?
+
+G005404
+```{r}
+snp %>% filter(D2_indiv=="G005404", D2_indiv=="G001785") 
+```
+Missing parent not included in the SNP analysis.
+
+G005504
+```{r}
+snp%>% filter(D2_indiv=="G005504") %>% slice(1:5) %>%
+  left_join(., mhap_logls, join_by("D2_indiv", D1_indiv))
+```
+True parent ranked 3rd in target SNP analysis
+
+G005519
+```{r}
+snp %>% filter(D2_indiv=="G005519", D2_indiv=="G005462")  
+```
+Missing parent not included in the SNP analysis.
+
+G005527
+```{r}
+snp%>% filter(D2_indiv=="G005527") %>% slice(1:5) %>%
+  left_join(., mhap_logls, join_by("D2_indiv", D1_indiv))
+```
+
+True parent ranked 3rd in target SNP analysis
+
+How many kids assigned using target SNP Marker?
+```{r}
+snp_assigns <- snp %>% group_by(D2_indiv) %>%
+  slice(1:2) %>%
+  ungroup() %>%
+  filter(logl_ratio>=10) %>% #logl_ratio at left end of PO logl distribution plot
+  distinct(D2_indiv, .keep_all = T) %>%
+  mutate(mh_kid = D2_indiv%in%mhap$kid)
+
+snp_assigns %>% 
+  filter(!D2_indiv=="G005417") %>% # removing because brood and kid spawned in different years
+  left_join(., mhap, by=c("D2_indiv"="kid", "D1_indiv"="brood_id")) 
+
+snp_kids <- snp_assigns %>% distinct(D2_indiv) %>% filter(!D2_indiv=="G005417") %>% pull(D2_indiv)
+mhap %>% filter(!kid%in%snp_kids) #G005519 not in data
+
+snp %>% filter(D2_indiv=="G005519") %>% filter(D1_indiv%in% c("G005462","G005463"))
+```
+G005417 and G005418 relationship removed (as it was in MH) because that kid and
+parent were spawned in different years.
+
+how many kids in SNP dataset?
+```{r}
+snp %>% distinct(D2_indiv) %>% nrow(.)#53
+```
+how many trios?
+```{r}
+ snp %>% 
+  group_by(D2_indiv) %>%
+  slice(1:2) %>%
+  ungroup() %>%
+  filter(logl_ratio>=10) %>%group_by(D2_indiv) %>% count(D2_indiv) %>% 
+  ungroup() %>%count(n) # 2 is trio, 1 is duo relationship.
+```
+
+#MAF assignment comparisons
+
+load in MAF assignments
+```{r}
+maf <- readRDS("../data-ckmr/ckmr-po-mafSNP-USDA.rds") 
+head(maf) #all assignments from MAF
+
+maf_assigns <- maf %>% group_by(D2_indiv) %>%
+  arrange(desc(logl_ratio)) %>%
+  slice(1:2) %>%
+  ungroup() %>%
+  filter(logl_ratio>=10) %>% #logl_ratio at left end of PO logl distribution plot
+  distinct(D2_indiv, .keep_all = T) %>%
+  mutate(mh_kid = D2_indiv%in%mhap$kid)
+
+nrow(maf_assigns) # number of kids assigned 
+```
+
+did MAF assigns match MH assigns?
+```{r}
+maf %>%
+  group_by(D2_indiv)  %>%
+  arrange(desc(logl_ratio)) %>%
+  slice(1:2) %>%
+  ungroup() %>%
+  left_join(mhap, . , by =c("kid"="D2_indiv", "brood_id" = "D1_indiv")) %>% #join mh assignments to snp assignments asking did the snp get the same answer as the mhap?
+  arrange(kid) %>%
+  filter(is.na(logl_ratio))
+```
+2 kids didn't match the MH assignments. Assigned in MH, but not MAF
+did the kids assign in MAF?
+```{r}
+maf_assigns %>% filter(D2_indiv%in%c("G005405", "G005409"))
+```
+yep, kids assigned, but they were single parent assignments.
+```{r}
+mhap %>% filter(kid%in%c("G005405", "G005409")) %>%
+  left_join(., mhap_logls, by=c("kid"="D2_indiv", "brood_id"="D1_indiv"))
+```
+Both parents assigned with plenty large logl ratios in microhaps.
+
+Now, why only 46 kids assign in the MAF? that seems low.
+
+```{r}
+maf %>%distinct(D2_indiv) %>%nrow(.) #53 spat in the analysis, same as SNP and MH
+maf_kids <- maf_assigns %>% distinct(D2_indiv) %>% pull(D2_indiv)
+
+maf %>% filter(!D2_indiv%in%maf_kids) %>% group_by(D2_indiv) %>% slice(1:5)
+```
+G005407 low log single parent assign MH
+G005412 no assign --> same in MH
+G005414 no assign --> same in MH
+G005417 no assign --> same in MH --NT note unassigned because the only related 
+parent was used in a different year class. The broodstock assigned had a high 
+number of loci (n=69) with 3 or more alleles passing QC filtering in the MH 
+data. Suggests issue with library preparation or genotyping quality.
+G005512 no assign low logs correct parents
+G005515 low logs correct parents
+G005534 low log correct parent. (duo in MH)
+
+All the relationships are there, it's just that MAF didn't pass logl filtering
+threshold of 10.
+
+how many trios in MAF?
+```{r}
+maf %>% group_by(D2_indiv) %>%
+  arrange(desc(logl_ratio)) %>%
+  slice(1:2) %>%
+  ungroup() %>%
+  filter(logl_ratio>=10) %>%group_by(D2_indiv) %>% count(D2_indiv) %>% 
+  ungroup() %>%count(n) # 2 is trio, 1 is duo relationship.
+```
+
+
+Make a BIG table with the mhap assignments as truth, join the SNP and MAF to it.
+```{r}
+snp2join <- snp %>% 
+  group_by(D2_indiv) %>%
+  arrange(desc(logl_ratio)) %>%
+  slice(1:2) %>%
+  ungroup()
+
+mh2join <- left_join(mhap,mhap_logls, by=c("kid"="D2_indiv","brood_id"="D1_indiv")) 
+
+all_assigns <- maf %>% group_by(D2_indiv) %>%
+  arrange(desc(logl_ratio)) %>%
+  slice(1:2) %>%
+  ungroup() %>%
+  mutate(mtype = "MAF") %>%
+  left_join(., snp2join, by=c("D2_indiv"="D2_indiv", "D1_indiv"="D1_indiv")) %>%
+  rename(maf_logl = logl_ratio.x,
+         maf_nloc = num_loc.x,
+         snp_logl = logl_ratio.y,
+         snp_nloc = num_loc.y) %>%
+  left_join(mh2join,.,by=c("kid" = "D2_indiv", "brood_id"= "D1_indiv")) #whole enchilada to summarize
+
+all_assigns
+```
+
+From Tom: I think a discordant assignments paragraph in the results would be helpful. It could address discordances between the different methods and the pedigree, as you do with the two cases in Table 1.
+
+(NT in Power for relationship reconstruction); Another thing to consider (I’m not insisting, just an idea for consideration) might be to take all the offspring with assignments that are concordant across panels and with the pedigree (all panels and the pedigree agree, so we are pretty confident and it is a common set to use for comparison) and compare the mean difference in LLR between the true parent-offspring pairs and the unrelated pairs. It could be a numerical way to reinforce the point you make visually in Figures 1 and 2.
+
+Calc Tom's statistic:
+
+```{r}
+meta_po <- read_xlsx("../data/thermofisher-sutherland-allsamples_metadata.xlsx", 
+                     sheet = "metadata_PO")
+ped_long <- meta_po %>% dplyr::select(-fam) %>%
+  pivot_longer(-indiv_id, names_to="sex", values_to = "brood_id") %>% 
+  dplyr::select(-sex)
+
+#join Mhap logls to it
+ped_long %>%
+  left_join(., mhap_logls, by=c("indiv_id"="D2_indiv", "brood_id"="D1_indiv")) %>%
+  left_join(., snp, by=c("indiv_id"="D2_indiv", "brood_id"="D1_indiv")) %>%
+  rename(snp_logl = logl_ratio, 
+         snp_num_loc = num_loc) %>% dplyr::select(-marker) %>%
+  left_join(., maf,  by=c("indiv_id"="D2_indiv", "brood_id"="D1_indiv")) %>%
+  rename(maf_logl = logl_ratio, 
+         maf_num_loc = num_loc) %>%
+  filter(!(is.na(mhap_logl)|is.na(snp_logl)|is.na(maf_logl))) %>%
+  filter(indiv_id %in% mhap$kid)
+```
+
+which assignments match pedigree?
+```{r}
+maf2join <- maf %>% filter(D2_indiv %in% maf_assigns$D2_indiv) %>%
+  filter(logl_ratio>=10) %>% group_by(D2_indiv) %>% slice(1:2) %>% ungroup()
+
+inner_join(mhap, ped_long, join_by("kid"=="indiv_id", "brood_id"=="brood_id"))  %>% #mhap to ped
+  inner_join(., snp2join%>%filter(logl_ratio>=10), join_by("kid"=="D2_indiv", "brood_id"=="D1_indiv")) %>% #SNP to mhap to ped 
+  inner_join(., maf2join, join_by("kid"=="D2_indiv", "brood_id"=="D1_indiv")) %>%
+  left_join(., mhap_logls, join_by("kid"=="D2_indiv", "brood_id"=="D1_indiv")) %>%
+  rename(snp_logl = logl_ratio.x,
+         snp_loc = num_loc.x,
+         maf_logl = logl_ratio.y,
+         maf_loc = num_loc.y) %>%
+  group_by(kid) %>%
+  summarise(
+    rel_type = case_when(
+    n()==1 ~"duo",
+    n()==2 ~"trio"),
+    mhap_loc = mean(mhap_num_loc),
+    mhap_logl = mean(mhap_logl),
+    snp_loc = mean(snp_loc),
+    snp_logl = mean(snp_logl),
+    maf_loc = mean(maf_loc),
+    maf_logl = mean(maf_logl)) %>%
+  mutate(mhap_snp = mhap_logl-snp_logl,
+         mhap_maf = mhap_logl-maf_logl,
+         ln_mh_snp = mhap_loc-snp_loc,
+         ln_mh_maf = mhap_loc-maf_loc) %>%
+  dplyr::select(kid, rel_type, mhap_snp, ln_mh_snp, mhap_maf, ln_mh_maf) %>%
+  mutate(mh_snp_mean = mean(mhap_snp),
+         mh_maf_mean = mean(mhap_maf))
+```
+
+#le fin.

@@ -1,0 +1,991 @@
+---
+title: "05-ckmrsim-usda-microhaps"
+author: "Neil Thompson"
+date: "2023-12-01"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+## parentage analysis for usda microhaplotype samples
+microhaplotype genotypes created using code in 03 and 04 RMD files
+```{r, load-processed-data}
+genos_processed <- readRDS("../data-microtyper/microtyper-processed-haplotypes-USDA.rds")
+library(CKMRsim)
+library(tidyverse)
+library(readxl)
+```
+
+first find the loci that are SNPS or monomorphic
+```{r, id-monomorphs-or-snp-loci}
+bad_locs <- genos_processed %>% 
+  group_by(locus) %>%
+  summarise(n_haplo = n_distinct(haplo),
+            n_nuc = nchar(haplo[[1]])) %>% 
+  filter(n_haplo==1|n_nuc==1) %>%
+  mutate(type  = case_when(
+    n_haplo==1&n_nuc==1 ~ "monoSNP",
+    n_haplo==1 ~ "monomorphic",
+    n_nuc==1~"SNP"
+  )) %>% 
+  pull(locus)
+
+genos_processed %>% 
+  group_by(locus) %>%
+  summarise(n_haplo = n_distinct(haplo),
+            n_nuc = nchar(haplo[[1]])) %>% 
+  #filter(n_haplo==1|n_nuc==1) %>%
+  mutate(type  = case_when(
+    n_haplo>1&n_nuc>1 ~ "poly_MH",
+    n_haplo==1&n_nuc==1 ~ "monoSNP",
+    n_haplo==1 ~ "monomorphic",
+    n_nuc==1~"SNP"
+  )) %>% count(type) %>% 
+  mutate(tot_loci = sum(n),
+         pct_loci =  round((n/tot_loci),2))
+```
+
+remove the snp and monomorph loci then calc missing data per indiv
+
+```{r,indiv-missing-data-plot}
+tot_loc <- genos_processed %>% 
+  filter(!locus %in% bad_locs) %>%
+  distinct(locus) %>%
+  nrow(.)
+
+genos_processed %>% 
+  distinct(locus)%>%nrow(.) #481 loci in processed data.
+
+genos_processed %>%
+  filter(!locus %in% bad_locs,
+         !is.na(haplo)) %>%
+  count(indiv.ID) %>%
+  mutate(pct_scored = n/(tot_loc*2)) %>% 
+  arrange(pct_scored) %>%
+  ggplot(., aes(x=pct_scored)) + geom_histogram(bins = 20) +
+  scale_x_continuous(breaks =seq(0,1,0.05))
+  ggtitle("distribution of percent total loci scored per indiv")
+```
+
+No individual has 100% data. Most have 90% or better, but there is a left skew.
+
+Where to chop the crappy individuals is a question.  Are the poorer indivs part
+of broodstock or spat samples?
+```{r, load-metadata}
+meta_pops <- read_xlsx("../data/thermofisher-sutherland-allsamples_metadata.xlsx", 
+                       sheet = "metadata_pops")
+meta_po <- read_xlsx("../data/thermofisher-sutherland-allsamples_metadata.xlsx", 
+                     sheet = "metadata_PO")
+
+genos_processed %>%
+  filter(!locus %in% bad_locs) %>%
+  count(indiv.ID) %>%
+  mutate(pct_scored = n/(tot_loc*2)) %>% 
+  arrange(pct_scored) %>%
+  left_join(., meta_pops, by=c("indiv.ID"="indiv_id"))
+```
+Yes, the really crappy samples have 1 spat and 2 broodstock. bummer. I'm wary
+of even using samples with 25%-ish missing data.  
+
+Is poor genotyping rate associated with more than 2 alleles 
+passing filter (microhaplotopia QC)?
+
+```{r}
+contam_samps <- readRDS("../data-microtyper/microtyper-contaminated-samples-USDA.rds")
+
+genos_processed %>%
+  filter(!locus %in% bad_locs) %>%
+  count(indiv.ID) %>%
+  mutate(pct_scored = n/(tot_loc*2)) %>% 
+  arrange(pct_scored) %>%
+  rename(loc_scored = n) %>%
+  left_join(., contam_samps, "indiv.ID") %>%
+    rename(loc_contam = n) %>%
+  mutate(loc_contam = ifelse(is.na(loc_contam),0, loc_contam)) %>%
+  ggplot(., aes(x=pct_scored, y=loc_contam)) +
+  geom_point() +
+  scale_x_continuous(breaks=seq(0,1,0.05))+
+  ggtitle("genotyping success v. number of loci with more\nthan 2 haplo passing microhaplotopia QC")
+```
+Doesn't look to me like much of a relationship between pct scored and the 
+number of loci with more than 2 alleles passing filter. Although there is a big
+spike below 80% genotyping success. Assignments with broodstock that have less 
+than 80% genotyping success should be scrutinized.
+
+```{r, sub80-broodstock}
+scrutiny_brood <- genos_processed %>%
+  filter(!locus %in% bad_locs) %>%
+  count(indiv.ID) %>%
+  mutate(pct_scored = n/(tot_loc*2)) %>%
+  filter(pct_scored<0.80) %>%
+  pull(indiv.ID)
+```
+
+Now figure out who sample 192 is.
+
+```{r, id-missing-indivs}
+meta_pops %>% filter(!indiv_id %in% genos_processed$indiv.ID)
+```
+
+There are 3 samples that aren't in processed genotypes. I'm not concerned with 
+the broodstock excess. The missing spat sample is a bummer. 
+
+Need to determine if sample 191 or sample 192 is the spat.
+```{r, id-missing-spat}
+id_meta <- read_xls("../data_thermofisher/thermofisher-gigas-agriseq-hotspot-snp.xls",
+                    n_max = 5, col_names = T) %>%
+  dplyr::select(contains("Ion")) 
+
+df_meta <- tibble(sample_id = colnames(id_meta)) %>%
+  separate(sample_id, into =c("ars_id", "thermo_id"), sep = ";")
+
+df_meta %>% filter(ars_id =="G005538") 
+```
+IonCode_0243 is the spat.
+
+load raw genos and look for any reads with that critter.
+```{r, check-raw-genos-missing-spat}
+read_tsv("../data-microtyper/sutherland_usda_read_counts.txt") %>%
+  filter(str_detect(Indiv, "IonCode_0243")) %>%
+  mutate(count = ifelse(Count=="noReads", 0, Count) %>% as.numeric(.)) %>%
+  mutate(tot_reads = sum(count)) %>% slice(1) %>%
+  dplyr::select(tot_reads, everything())
+```
+Spat G005538 had 529 reads total --> Fail. probably a crappy DNA extraction.
+
+That means sample 191 and 192 are the excess broodstock samples and can 
+generally be ignored for this analysis.
+
+Toss poor performing indivs then onto ckmrsim.
+keeping individuals with greater than 75% scored data
+
+```{r}
+indivs2keep<- genos_processed %>%
+  filter(!locus %in% bad_locs) %>%
+  count(indiv.ID) %>%
+  mutate(pct_scored = n/(tot_loc*2)) %>% 
+  filter(pct_scored>0.75) %>%
+  pull(indiv.ID) #all samples with less than 25 percent missing data
+```
+
+ID crappy performing loci
+
+```{r, id-crappy-loci}
+tot_indiv = genos_processed %>%
+  filter(indiv.ID%in%indivs2keep) %>% 
+  distinct(indiv.ID) %>% nrow(.)
+
+loci2chuck <- genos_processed %>%
+  filter(indiv.ID%in%indivs2keep) %>% #remove low genotyping success oysters
+  count(locus) %>% mutate(pct_gt = (n/2)/tot_indiv) %>% arrange(pct_gt) %>%
+  filter(pct_gt<0.85) %>% #remove loci that scored in less than 85% of samples
+  pull(locus)
+```
+
+I used a filter of 85% of samples needing to be scored at a locus for it to be 
+retained. I'd like this to be higher, but I don't want to chop too many 
+loci out.
+
+#CKMR prep
+
+```{r,ckmr-prep}
+long_genos <- genos_processed %>%
+  filter(indiv.ID%in%indivs2keep, #individual missing data filter
+         !locus %in% loci2chuck, #locus missing data filter
+         !locus %in% bad_locs) %>% #removes SNPs and monomorphs
+  rename(Indiv = indiv.ID, 
+         Locus=locus,
+         Allele=haplo) %>%
+  mutate(gene_copy = as.character(rank)) %>%
+  dplyr::select(Indiv, Locus, Allele, gene_copy)
+
+#how many indivs? should be 183 
+long_genos%>% distinct(Indiv) %>% nrow(.)
+
+#how many loci?
+long_genos %>% distinct(Locus) %>% nrow(.) #362 loci
+
+#summarise the metadata (population, broodstock spat, midori etc) of retained samples
+
+df_meta <- read_xlsx("../data/thermofisher-sutherland-allsamples_metadata.xlsx", sheet="metadata_pops")
+
+long_genos%>% distinct(Indiv) %>%
+  left_join(., df_meta, by=c("Indiv" = "indiv_id")) %>%
+  count(life_stage, pop)
+
+#saveRDS(long_genos, "../data-ckmr/ckmr-long-genos-microhaps-filtered.rds")
+```
+
+#sidequest
+private alleles by pop
+```{r}
+priv_alleles <- left_join(long_genos, meta_pops%>%dplyr::select(indiv_id, pop), by=c("Indiv"="indiv_id")) %>%
+  distinct(Locus,Allele,pop) %>% #filter down to 1 instance per allele per population
+  filter(!is.na(pop))%>%
+  count(Locus,Allele) %>% #n=1 is a private allele
+  filter(n==1) 
+
+left_join(long_genos, meta_pops%>%dplyr::select(indiv_id, pop), by=c("Indiv"="indiv_id")) %>%
+  distinct(Locus,Allele,pop) %>%
+  filter(!is.na(pop)) %>%
+  filter(Locus%in%priv_alleles$Locus & Allele%in%priv_alleles$Allele) %>%
+  group_by(Locus,Allele) %>%
+  count(pop) #thats a lot of private alleles
+
+#read depth per priv allele
+left_join(genos_processed, meta_pops%>%dplyr::select(indiv_id, pop), by=c("indiv.ID"="indiv_id")) %>%
+  group_by(locus,haplo,pop) %>%
+  filter(!is.na(pop)) %>%
+  filter(locus%in%priv_alleles$Locus & haplo%in%priv_alleles$Allele) %>%
+  summarise(n_indiv = n_distinct(indiv.ID),
+            mean_depth = mean(depth)%>%round(.,1)) %>%
+  arrange(pop,desc(n_indiv))
+```
+
+#how confident am I in the private alleles? are they seen mainly in more than 1 indiv per population?
+```{r}
+left_join(genos_processed, meta_pops%>%dplyr::select(indiv_id, pop), by=c("indiv.ID"="indiv_id")) %>%
+  group_by(locus,haplo,pop) %>%
+  filter(!is.na(pop)) %>%
+  filter(locus%in%priv_alleles$Locus & haplo%in%priv_alleles$Allele) %>%
+  filter(indiv.ID %in% unique(long_genos$Indiv)) %>%
+  summarise(n_indiv = n_distinct(indiv.ID),
+            mean_depth = mean(depth)%>%round(.,1)) %>%
+  arrange(pop,desc(n_indiv)) %>%
+  mutate(mto = ifelse(n_indiv==1,FALSE,TRUE)) %>% #mto = more than one
+  ungroup(.) %>%
+  count(pop,mto) %>%
+  group_by(pop) %>%
+  mutate(tot_indiv = sum(n),
+         pct_mto = n/tot_indiv %>%round(.,2))  %>%
+  filter(mto==TRUE)
+```
+
+pct_mto is the percentage of private alleles that are present in more than one 
+(MTO) within each population. Given the high percentage, in midori and miyagi 
+especially, I've got confidence these are real private alleles.
+
+allele freqs
+```{r, calc-af}
+alle_freqs <- long_genos %>%
+  count(Locus, Allele) %>%
+  group_by(Locus) %>%
+  mutate(Freq = n / sum(n),
+         Chrom = "Unk",
+         Pos = cur_group_id()) %>%
+  ungroup() %>%
+  select(Chrom, Pos, Locus, Allele, Freq) %>%
+  arrange(Pos, desc(Freq)) %>%
+  mutate(AlleIdx = NA,
+         LocIdx = NA) %>%
+  filter(!is.na(Allele))
+
+afreqs_ready <- reindex_markers(alle_freqs)
+```
+
+simulate relats and calc logls.
+```{r, sim-relats}
+ex1_ckmr <- create_ckmr(
+  D = afreqs_ready,
+  kappa_matrix = kappas[c("PO", "FS", "AN", "U"), ],
+  ge_mod_assumed = ge_model_TGIE,
+  ge_mod_true = ge_model_TGIE,
+  ge_mod_assumed_pars_list = list(epsilon = 0.005),
+  ge_mod_true_pars_list = list(epsilon = 0.005)
+)
+
+ex1_ckmr #number of alleles is high (25!), but let's run with it, #362 loci 
+
+ex1_Qs <- simulate_Qij(ex1_ckmr, 
+                       calc_relats = c("PO", "FS","AN", "U"), #assumed relationships
+                       sim_relats = c("PO", "FS", "AN", "U") ) # true relationships
+```
+
+check for duplicate genos
+```{r, dup-genos-check}
+find_close_matching_genotypes(LG = long_genos,
+                                          CK = ex1_ckmr,
+                                          max_mismatch = 6)
+```
+
+G005498 and G005499 could be lab or sampling error. both are Broodstock samples
+from MBP cohort 30. I didn't do or oversee that sampling so I can't comment
+further. will toss G005499 because it has a few less loci scored.
+
+G001945 and G001951 aren't broodstock or spat so I'm just going to remove 
+them both. they are both midori excess broodstock but should have been from 
+2 different families 2016-006 and 2016-029. I don't think I screwed up that 
+animal sampling. Toss G001951 because it has fewer loci scored.
+
+calc logl distributions from simulation and plot em
+```{r}
+PO_U_logls <- extract_logls(ex1_Qs,
+                            numer = c(PO = 1),
+                            denom = c(U = 1))
+
+microhap_logls <- ggplot(PO_U_logls,
+            aes(x = logl_ratio, fill = true_relat)) +
+  geom_density(alpha = 0.25) +
+  scale_x_continuous(name = "log-likelihood ratio",limits=c(-400,225)) +
+  scale_y_continuous(name = "density") + 
+  theme_light()+
+  annotate("text", label = "microhap", x = -300, y = 0.025, size = 6)
+
+microhap_logls
+
+#saveRDS(microhap_logls, file="../tmp-plot-microhap-usda-logl-dist.RDS") #save for cowplotting in future with SNP distributions.
+
+#estimate FPR with PO_U relats
+mc_sample_simple(ex1_Qs, 
+                 nu = "PO",
+                 de = "U")
+```
+
+Wow that's crazy low, an FPR of 2.9 x 10^-48 at a FNR of 0.01
+
+What about FPR of PO vs. AN relat
+
+```{r, fpr-po-an}
+mc_sample_simple(ex1_Qs, 
+                 nu = "PO",
+                 de = "AN")
+```
+
+Still very very low FPR 9.13 x10^-45 for PO assumed but AN real.
+
+What about PO v. FS --> assuming a misslabeled kid
+
+```{r, fpr-po-FS}
+mc_sample_simple(ex1_Qs, 
+                 nu = "PO",
+                 de = "FS")
+```
+bonkers low number still. FPR of 2.4 x 10^-41 at a FNR of 0.01
+
+*note FPRs may vary a bit from run to run since I didn't set.seed
+
+Overall, lots of power to determine PO from AN in simulated data.
+
+#back to CKMRsim
+remove the duplicate samples then run with finding PO
+```{r,ckmrsim-PO-comparisons}
+brood_samples <- meta_pops %>%
+  filter(life_stage=="broodstock") %>%
+  filter(!indiv_id == "G005499") %>% #remove duplicate
+  pull(indiv_id)
+
+spat_samples <- meta_pops %>%
+  filter(str_detect(life_stage, "spat")) %>%
+  pull(indiv_id)
+
+candidate_parents <- long_genos %>% 
+  filter(Indiv %in% brood_samples)
+
+candidate_offspring <- long_genos %>% 
+  filter(Indiv %in% spat_samples)
+
+po_pairwise_logls <- pairwise_kin_logl_ratios(D1 = candidate_parents, 
+                                              D2 = candidate_offspring, 
+                                              CK = ex1_ckmr,
+                                              numer = "PO",
+                                              denom = "U")
+
+#write_rds(po_pairwise_logls, "../data-microtyper/USDA-ckmr-microhap-logl-values-allpairwisecomps.rds")
+```
+
+
+plot the results with brood sex included
+```{r, plot-PO}
+brood_sex <- meta_po %>%
+  dplyr::select(indiv_id, sire, dam) %>%
+  pivot_longer(-1, names_to = "sex", values_to = "brood_id")
+
+brood_fams <- meta_pops %>%
+  dplyr::select(indiv_id, fam, pop) %>%
+  mutate(fam_corrected = 
+           case_when(
+             str_detect(fam, "^2016") ~ paste0("2016-", str_sub(fam,-2,-1)),
+             str_detect(fam, "^YC") ~ fam, 
+             str_detect(fam, "^W") ~ fam,
+             str_detect(fam, "^[0-9]{2}_") ~ paste0(str_sub(fam,1,6)),
+             str_detect(fam, "^F") ~ fam,
+           )) %>%
+  dplyr::select(-fam)
+
+spat2broodfam <- brood_sex %>%
+  left_join(., brood_fams, by=c("brood_id" = "indiv_id")) %>%
+  dplyr::select(indiv_id, sex, fam_corrected) %>%
+  pivot_wider(., values_from = "fam_corrected", names_from = "sex")
+
+mhap_po <- po_pairwise_logls %>%
+  left_join(., brood_sex, by =c("D1_indiv" = "brood_id", "D2_indiv"="indiv_id")) %>%
+  arrange(D2_indiv, desc(logl_ratio)) %>%
+  group_by(D2_indiv) %>%
+  #slice(1:10) %>%
+  left_join(., brood_fams, by =c("D1_indiv" = "indiv_id")) %>%
+  left_join(., spat2broodfam, by =c("D2_indiv" = "indiv_id")) %>%
+  mutate(rel_type = case_when(
+    sex%in%c("sire", "dam") ~ "PO",
+    is.na(sex)&(fam_corrected==sire|fam_corrected==dam) ~ "AN",
+    !(fam_corrected==sire|fam_corrected==dam) ~ "U")) %>%
+  ungroup(.) %>%
+  ggplot(., aes(x=D2_indiv,y=logl_ratio, colour = rel_type, fill=rel_type)) +
+           geom_point()  +
+  scale_y_continuous(name = "log likelihood ratio", limits = c(-550,175), breaks = seq(-550,150,50))+
+  scale_x_discrete(name = "Offspring") +
+  theme_light() +
+  theme(axis.text.x = element_text(angle = 65, vjust = 1.1, hjust=1.15)) +
+    guides(fill = guide_legend(title = "Relationship type"),
+           colour = guide_legend(title = "Relationship type"))
+
+mhap_po
+#ggsave(mhap_po,"../tmp-plot-microhap-usda-PO-logl-dist.pdf")
+#saveRDS(mhap_po, "../tmp-plot-microhap-usda-PO-logl-dist.rds")
+```
+
+make a kid list and start removing samples as I check them
+```{r}
+kid_list <- meta_po %>% distinct(indiv_id) %>% rename(kid = indiv_id)
+
+brood_sex <- meta_po %>% dplyr::select(sire, dam) %>%
+  pivot_longer(1:2,names_to="sex", values_to = "brood_id") %>%
+  distinct(brood_id, .keep_all = T)
+
+ckmr_microPO <- po_pairwise_logls %>% arrange(D2_indiv, desc(logl_ratio)) %>%
+  group_by(D2_indiv) %>%
+  slice(1:2) %>% #take top 2 assignments per spat
+  filter(logl_ratio >0) %>% #remove unrelateds
+  rename(kid = D2_indiv, 
+         brood = D1_indiv) %>%
+  left_join(., brood_sex, by=c("brood"="brood_id")) %>%
+  dplyr::select(kid, sex, brood) %>% pivot_wider(id_cols="kid", names_from="sex", values_from = "brood") #now i need to see if this matches meta_po
+
+kids_perfect_match <- meta_po %>%
+  left_join(., ckmr_microPO, by=c("indiv_id"="kid")) %>%
+  filter(sire.x==sire.y&dam.x==dam.y) %>%
+  pull(indiv_id)
+```
+
+kids_perfect_match is the list of spat that have metadata parents match exactly
+with the ckmrsim assigned parents.
+
+ID kids not on the perfect list and see what happened.
+```{r, table-of-unexpected-assignments-v1}
+library(kableExtra)
+kid_list %>% 
+  filter(!kid%in% kids_perfect_match) %>%
+  mutate(has_geno = kid %in% long_genos$Indiv) %>% #is there genotype data for spat?
+  left_join(., ckmr_microPO, "kid") %>%
+  rename(unk_sex = 'NA')%>%
+  mutate(case_type = case_when( #assign relationship types to oddball spat
+    has_geno==FALSE ~ "no_geno_data",
+    is.na(sire)&is.na(dam)&is.na(unk_sex)==TRUE ~ "no_assign",
+    is.na(sire)|is.na(dam) ~ "duo_assign",
+    !(is.na(sire)|is.na(dam)) ~ "trio_unexpected"
+  )) %>% 
+  arrange(case_type) %>%
+  left_join(., meta_po%>%dplyr::select(indiv_id,sire), by=c("kid"="indiv_id")) %>%
+  mutate(good_duo = sire.x==sire.y&case_type=="duo_assign", #figure out if these are expected single relationships
+         case_type=ifelse(good_duo=="TRUE", "duo_expected", case_type), #assign new case types
+         case_type=ifelse(good_duo=="FALSE"&case_type=="duo_assign", "duo_unexpected", case_type)) %>%
+  dplyr::select(-c("good_duo")) %>%
+  rename(sire_expected = sire.y,
+         sire = sire.x) %>%
+  arrange(case_type) %>%
+  kable("html") %>%
+  kable_styling(full_width = FALSE)
+```
+
+
+Check if the unexpected trios are documented crosses.
+
+```{r, unexpected-trios-real-assigns}
+meta_po %>%
+  filter((sire=="G005438"&dam=="G005439")|(sire=="G001795"&dam=="G001895")|(sire=="G005498"&dam=="G005501"))
+```
+
+one of the unexpected trios is a documented cross from MBP cohort 30. The other
+two unexpected trios aren't simple labeling errors on the spat.
+
+```{r,investigate-nondocumented-broodpairs-num1}
+meta_po %>%
+  filter(sire=="G001795" | dam=="G001895") 
+```
+this is likely spawn day contamination. Both broodstock were used in consecutive 
+crosses. I'm inclined to believe the ckmr assignment assuming the other 
+assignments for the kid weren't high.
+```{r}
+po_pairwise_logls %>% 
+  filter(D2_indiv=="G005415") %>% 
+  arrange(desc(logl_ratio)) %>%
+  slice(1:5)
+```
+yep. other relationships aren't high at all. This points to spawn day 
+contamination
+
+investigate the other unexpected trio
+```{r, investigate-nondocumented-broodpairs-num2}
+meta_po %>%
+  filter(sire=="G005498" | dam=="G005501")
+```
+This could be another spawn day error. The other potential explanation is that
+G005498 and G005499 had identical genotypes and I removed the G005499 sample. 
+So perhaps the true parent is missing from the data. Did the metadata parent 
+have higher logl than the unexpected parent?
+```{r}
+po_pairwise_logls %>% filter(D2_indiv=="G005537") %>%
+  arrange(desc(logl_ratio)) %>% slice(1:5) 
+```
+Nope, the unexpected parent, G005501, has higher likelihood ratio than the
+parent that was recorded on spawn day.  This doesn't add any clarifying info to
+this kid, so I will choose to trust the genetic parentage assignment and state 
+this is a spawn day crossing mistake.
+
+Only cases left to investigate are unexpected duo assignments and no assigns.
+
+Figure out what the G005417 and G005418 relationship is. G005417 is from the
+`r meta_pops%>%filter(indiv_id=="G005417")%>%pull(pop)` population and is from the `r meta_po%>%filter(indiv_id=="G005417")%>%pull(fam)` family.  It's a POGS year class 2023 spat.
+```{r}
+po_pairwise_logls %>% filter(D2_indiv=="G005417") %>% 
+  arrange(desc(logl_ratio)) %>% slice(1:5) #only 1 highly related brood.
+
+#who is G005418?
+meta_pops %>% filter(indiv_id=="G005418") #willapa broodstock, from which spawn?
+
+read_xlsx("../data/thermofisher_sutherland_panel_sample_sheet-final-11may2023.xlsx") %>%
+  filter(indiv_id=="G005418") #this isn't matching up. G005418 is from MBP cohort 31, not POGS yearclass 2023.
+
+#can bad genotypes explain this?
+contam_samps %>% filter(indiv.ID %in% c("G005417", "G005418"))
+```
+
+I don't think the assignment between G005417 and G005418 is real.  The broodstock
+has questionable genotype quality as it has 69 loci with 3 or more alleles
+passing filters. Secondly, the broodstock is from MBP cohort 31 spawned in 2022
+and the spat is from POGS yearclass 2023. So the samples weren't taken in the
+same year. Only explantion for that is mislabeling samples in the lab. I'm going 
+to NA this relationship and reclassify G005417 as a no_assign
+
+Last two samples with unexpected assignments are duo_unexpecteds -->
+G005407 and G005411
+
+```{r, duo_unexpected_sample1}
+po_pairwise_logls %>% filter(D2_indiv=="G005407") %>%
+  arrange(desc(logl_ratio)) %>% slice(1:5) #1 highly related brood.
+
+meta_po %>%
+  filter(indiv_id=="G005407"|sire=="G001890") # consecutive crosses so could be contamination
+
+po_pairwise_logls %>%
+  filter(D2_indiv=="G005407",
+         D1_indiv %in% c("G001787", "G001788", "G001890", "G001891"))
+```
+
+Unsure about this. Of the potential broodstock (putative family and the potential
+mixup family) there is only 1 highly related broodstock. That doesn't make any
+sense, unless genotype quality is bad.
+
+There are `r contam_samps%>%filter(indiv.ID=="G005407")` loci in spat G005407 that
+had 3 or more alleles pass filter so there's no indication that's a bad genotype
+sample.  The 4 broodstock have `r contam_samps%>%filter(indiv.ID%in%c("G001787", "G001788", "G001890", "G001891"))%>%pull(n)` loci with 3 or more alleles per locus passing filter so
+those genotypes look fine too.
+
+This relationship is going to go unresolved without more genotyping.
+
+```{r, duo_unexpected_sample2}
+po_pairwise_logls %>% filter(D2_indiv=="G005411") %>%
+  arrange(desc(logl_ratio)) %>% slice(1:5) #1 highly related brood.
+
+meta_po %>% filter(indiv_id=="G005411"|sire=="G001885") #crosses separated by 10 families on spawn day.
+
+po_pairwise_logls %>%
+  filter(D2_indiv=="G005411",
+         D1_indiv %in% c("G001885", "G001893", "G001782", "G001792"))
+
+contam_samps %>% filter(indiv.ID%in%c("G005411","G001885", "G001893", "G001782", "G001792")) #G001792 has questionable genotype quality
+
+po_pairwise_logls %>% filter(D1_indiv=="G001792") %>% 
+  arrange(desc(logl_ratio)) #G001792 didn't assign to any spat, but is should be the mom of G005411
+```
+
+Another unexpected duo that won't be resolved without more genotyping. The 
+expected mom has questionable genotype quality with 67 loci having 3 or more
+alleles pass filtering. If that mom (G001792) is the true mom, then the low
+logl likelihood with the spat could be due to the genotype quality issue.
+
+Check the no_assign cases
+```{r}
+po_pairwise_logls %>% 
+  filter(D2_indiv %in% c("G005412", "G005414", "G005417")) %>%
+  arrange(desc(logl_ratio)) %>% group_by(D2_indiv) %>% slice(1:3) %>% ungroup() #no brood highly related
+
+#what fams are these from?
+meta_po %>% 
+  filter(indiv_id %in% c("G005412", "G005414", "G005417"))
+
+#did any of the putative parents assign to spat?
+po_pairwise_logls %>%
+  filter(D1_indiv %in% c("G001793","G001795", "G001894", "G001895", "G001896")) %>%
+  arrange(desc(logl_ratio))
+```
+
+I don't have a good explanation for why the no_assign cases don't have parents.
+The parsimonious explanation is that a labeling error occurred and the true
+parents weren't sent for genotyping. This is possible as the wild willapa 
+part of POGS yc2023 did not go to original plan and there was substantial 
+change on spawn day about which animals to cross together.
+
+One way to further investigate this is by genotyping more of the juveniles from
+these families with the panel to see if we get a consistent result with multiple
+spat from each family. Until then I have nothing to add. NOTE: If genotyping in
+the future add spat from the Midori families with duo_unexepcted_unresolvable
+to gain more information there.
+
+Done with checking the unexpected assignments. I'll finalize the unexpected
+assignments in a table below and make a final relationship assignment file to 
+save to disk for future work and comparison with SNP assignments.
+
+```{r,table-unexpected-assignments-final}
+ckmr_unexpected_assigns <- kid_list %>% 
+  filter(!kid%in% kids_perfect_match) %>%
+  mutate(has_geno = kid %in% long_genos$Indiv) %>% #is there genotype data for spat?
+  left_join(., ckmr_microPO, "kid") %>%
+  rename(unk_sex = 'NA')%>%
+  mutate(case_type = case_when( #assign relationship types to oddball spat
+    has_geno==FALSE ~ "no_geno_data",
+    is.na(sire)&is.na(dam)&is.na(unk_sex)==TRUE ~ "no_assign",
+    is.na(sire)|is.na(dam) ~ "duo_assign",
+    !(is.na(sire)|is.na(dam)) ~ "trio_unexpected"
+  )) %>% 
+  left_join(., meta_po%>%dplyr::select(indiv_id,sire), by=c("kid"="indiv_id")) %>%
+  mutate(good_duo = sire.x==sire.y&case_type=="duo_assign", #figure out if these are expected single relationships
+         case_type=ifelse(good_duo=="TRUE", "duo_expected", case_type), #assign new case types
+         case_type=ifelse(good_duo=="FALSE"&case_type=="duo_assign", "duo_unexpected", case_type)) %>%
+  dplyr::select(-c("good_duo")) %>%
+  rename(sire_expected = sire.y, sire = sire.x) %>%
+  mutate(case_type = case_when(
+    kid =="G005527" ~ "trio_kid_label_error",
+    kid %in%c("G005537","G005415") ~ "trio_spawn_day_cross_error",
+    kid =="G005417" ~ "no_assign",
+    kid %in% c("G005407", "G005411") ~ "duo_unexpected_unresolvable",
+    !kid %in% c("G005527","G005537","G005415","G005417","G005407", "G005411") ~ case_type
+  )) %>% dplyr::select(-unk_sex) %>% #removes the G005417-G005418 assignment.
+  dplyr::select(-sire_expected) 
+
+ckmr_unexpected_assigns %>%
+  kable("html") %>%
+  kable_styling("striped", full_width = FALSE)
+```
+
+Final parentage assignment from microhap CKMRanalysis.
+
+
+```{r, final-checked-PO-assignments-microhaps}
+ckmr_microhap_rels <- ckmr_microPO %>%
+  filter(!kid=="G005417") %>% #removes G005417 and G005418 assignment that isn't real
+  bind_rows(., 
+            meta_po%>%dplyr::select(indiv_id)%>%rename(kid=indiv_id)%>%filter(!kid%in%ckmr_microPO$kid)) %>% #adding the no assigned and no genotype spat samples back into the data
+  left_join(., ckmr_unexpected_assigns%>%dplyr::select(kid, case_type), "kid") %>%
+  mutate(case_type = ifelse(kid%in%kids_perfect_match, "trio",case_type)) %>%
+  rename(relationship_class = case_type) %>%
+  arrange(kid)
+  
+#write_rds(ckmr_microhap_rels,"../data-microtyper/USDA-ckmr-microhap-PO-assignments.rds")
+#write_csv(ckmr_microhap_rels,"../data-microtyper/USDA-ckmr-microhap-PO-assignments.csv")
+```
+
+Summary notes:  The genotype data ended up having `r long_genos%>%filter(Indiv%in%candidate_offspring$Indiv|Indiv%in%candidate_parents$Indiv)%>%distinct(Locus)%>%nrow(.)` loci. There were `r candidate_offspring%>%distinct(Indiv)%>%nrow()` spat in the analysis
+and there were `r candidate_parents%>%distinct(Indiv)%>%nrow()` potential broodstock used 
+
+
+Plot the log liklihoods on the simulated distribution from earlier
+
+```{r,plot-logls-on-simulated-distribution}
+kid2plot <- ckmr_microhap_rels %>%dplyr::select(kid,sire,dam) %>%
+  pivot_longer(sire:dam, names_to="sex", values_to = "parent") %>%
+  filter(!is.na(parent)) %>%
+  left_join(., po_pairwise_logls, by=c("kid"="D2_indiv", "parent" ="D1_indiv"))
+
+ggplot() +
+  geom_density(data=PO_U_logls,
+            aes(x = logl_ratio, fill = true_relat),alpha = 0.25)+
+  geom_point(data=kid2plot,aes( x=logl_ratio, y = 0.0025))  +
+  scale_y_continuous(name="", breaks = NULL)+
+  scale_x_continuous(name = "Log likelihood ratio")+
+  theme_light()
+  #ggtitle("log liklihood ratio of metadata and \nparentage assignments that match")
+
+#ggsave("../data-microtyper/plots/log-likelihood-assignments-expected-distribution.pdf",width=7, height=4.5)
+```
+
+
+#Sidequest 
+if mendelian incompatibility loci are removed do we get a more
+normal looking distribution of log likelihoods for the assignments?
+
+```{r, mendel-incompat-function}
+#' Identify loci in PO pairs that are Mendelian incompatible
+#'
+#' This is a handy function for taking parent-offspring pairs, typically identified
+#' using CKMRsim, and then tagging the loci at which the observed/recorded genotypes
+#' are not compatible with Mendelian inheritance.  This version is currently very
+#' simple and merely looks at pairs of individuals. (i.e., it does not attempt to identify
+#' Mendelian incompatible loci on the basis of pa-ma-kid trios.)  Noetheless, it should
+#' be useful for identifying poor-performing loci.
+#' @param po a tibble of the parent-offspring pairs.  This will typically be obtained
+#' by filtering the output for `pairwise_kin_logl_ratios()` and it must have the format
+#' of that output: columns of `D2_indiv`, `D1_indiv`, `logl_ratio`, and  `num_loc`.
+#' @param geno a long format data frame / tibble of genotype data for both the candidate
+#' offspring and the candidate parents.  Typically this is what you get if you use
+#' `bind_rows()` on the `D1` and `D2` inputs to `pairwise_kin_logl_ratios()` for a parent-offspring
+#' type of analysis.  Must have the
+#' columns: `Indiv`, `Locus`, `gene_copy`, and `Allele`. Obviously, the IDs in Indiv must
+#' correspond to those used in `D1_indiv` and `D2_indiv`
+#' @return This returns a tibble with the columns:
+#' - `D2_indiv`: the ID of the D2_indiv
+#' - `D1_indiv`: the ID of the D1_indiv
+#' - `logl_ratio`: the log-likelihood ratio for parent-offspring for the pair
+#' - `Locus`: the name of the locus
+#' - `D1a_1, D1a_2, D2a_1, D2a_2`: D1_indiv's allelic type of gene copy 1 and 2, and then
+#' D2_indiv's allelic type of gene copy 1 and 2, respectively
+#' - `is_MI`: logical vector.  TRUE if the pair is Mendelian incompatible at the Locus. Otherwise
+#' FALSE (or NA if either member of pair was NA)
+#' @details Note that if you want to count up the relative frequency (across all pairs) of
+#' Mendelian incompatibilities at each locus you can do like this:
+#' ```r
+#' tag_mendelian_incompatibilities(po, geno) %>%
+#'  group_by(Locus) %>%
+#'  summarise(mean_incompat = mean(mend_incompat, na.rm = TRUE)) %>%
+#'  arrange(desc(mean_incompat))
+#' ```
+#' @export
+tag_mendelian_incompatibilities <-  function(po, geno) {
+  ret <- left_join(po, geno, by = c("D2_indiv" = "Indiv"), relationship = "many-to-many") %>%
+    rename(D2a = Allele) %>%
+    select(-num_loc) %>%
+    left_join(geno, by = c("D1_indiv" = "Indiv", "Locus", "gene_copy")) %>%
+    rename(D1a = Allele) %>%
+    pivot_wider(names_from = gene_copy, values_from = c(D1a, D2a), names_sep = "_") %>%
+    mutate(
+      is_MI = D1a_1 != D2a_1 & D1a_1 != D2a_2 & D1a_2 != D2a_1 & D1a_2 != D2a_2
+    )
+
+  ret
+}
+```
+
+find mendelian incompatibilites
+```{r}
+ckmr_microhap_rels <- readRDS("../data-microtyper/USDA-ckmr-microhap-PO-assignments.rds")
+po_pairwise_logls <- readRDS("../data-microtyper/USDA-ckmr-microhap-logl-values-allpairwisecomps.rds")
+
+ckmr_long <- ckmr_microhap_rels %>% 
+  dplyr::select(-relationship_class) %>%
+  pivot_longer(sire:dam, names_to="sex", values_to = "brood_id") %>%
+  filter(!is.na(brood_id)) %>%
+  mutate(tmp_id = paste0(kid,"_", brood_id)) %>% pull(tmp_id)
+
+rels4mendel <- po_pairwise_logls %>% 
+  mutate(tmp_id = paste0(D2_indiv,"_",D1_indiv)) %>%
+  filter(tmp_id %in% ckmr_long) #this is all parentage assignments from ckmrsim, including the unexpected ones.
+
+mi_microhaps <- tag_mendelian_incompatibilities(rels4mendel, long_genos) 
+
+mi_microhaps %>%
+    count(D2_indiv, D1_indiv, is_MI) %>%
+  pivot_wider(names_from ="is_MI", values_from = "n") %>%
+  left_join(., rels4mendel, by=c("D2_indiv"="D2_indiv", "D1_indiv"="D1_indiv")) %>%
+  arrange(D2_indiv, desc(logl_ratio)) %>%
+  rename(mi_loc=4) %>%
+  mutate(pct_MI = mi_loc/num_loc) %>%
+  ggplot(., aes(x=D2_indiv, y = mi_loc)) +
+  geom_point() +
+  scale_y_continuous(name="number of mendelian incompatibilities", breaks=seq(0,30,5), limits=c(0,30)) +
+  scale_x_discrete(name="kids") +
+  theme_light() + 
+  theme(axis.text.x = element_text(angle = 65, vjust = 1.1, hjust=1.15))
+```
+
+That's a lot of mendelian incompatibilities for each parent-kid pair. I bet that
+is driving the shifted log likelihood distribution.
+
+Remove the loci with many MI, then CKMR and see if the shift is gone....
+
+```{r}
+mi_microhaps %>% 
+  filter(is_MI==TRUE) %>% 
+  count(Locus) %>% 
+  ggplot(., aes(x=n))+geom_histogram(binwidth = 1) +
+  scale_x_continuous(name="number of Mendelian incompatibility per locus", 
+                      breaks =seq(0,30,1))
+```
+
+there are `r mi_microhaps%>%group_by(Locus)%>%filter(!any(is_MI==TRUE))%>%distinct(Locus)%>%nrow(.)` loci that had no mendelian incompatibility occur.
+
+```{r}
+loci_noMI <- mi_microhaps %>% group_by(Locus) %>%
+  filter(!any(is_MI==TRUE)) %>% distinct(Locus) %>% ungroup() %>%
+  pull(Locus)
+
+loci_oneMI <- mi_microhaps %>% filter(is_MI==TRUE) %>%count(Locus) %>%
+  filter(n==1) %>% pull(Locus)
+
+long_genos_mi <- long_genos %>% filter(Locus %in% loci_noMI | Locus %in% loci_oneMI)
+#write_rds(long_genos_mi, "../data-microtyper/USDA_mendelian_loci_only_genos_microhaps.rds")
+```
+
+Now prep CKMR like I did before.
+```{r,ckmr-mi-loci-excluded}
+alle_freqs_mi <- long_genos_mi %>%
+  count(Locus, Allele) %>%
+  group_by(Locus) %>%
+  mutate(Freq = n / sum(n),
+         Chrom = "Unk",
+         Pos = cur_group_id()) %>%
+  ungroup() %>%
+  select(Chrom, Pos, Locus, Allele, Freq) %>%
+  arrange(Pos, desc(Freq)) %>%
+  mutate(AlleIdx = NA,
+         LocIdx = NA) %>%
+  filter(!is.na(Allele))
+
+afreqs_ready_mi <- reindex_markers(alle_freqs_mi)
+```
+
+simulate relats and calc logls.
+```{r, sim-relats}
+ex1_ckmr_mi <- create_ckmr(
+  D = afreqs_ready_mi,
+  kappa_matrix = kappas[c("PO", "AN", "U"), ],
+  ge_mod_assumed = ge_model_TGIE,
+  ge_mod_true = ge_model_TGIE,
+  ge_mod_assumed_pars_list = list(epsilon = 0.005),
+  ge_mod_true_pars_list = list(epsilon = 0.005)
+)
+
+ex1_ckmr_mi  #2-13 allles at 104 loci
+
+ex1_Qs_mi <- simulate_Qij(ex1_ckmr_mi, 
+                       calc_relats = c("PO", "AN", "U"), #assumed relationships
+                       sim_relats = c("PO",  "AN", "U") ) # true relationships
+```
+plot power to assign relationships
+
+```{r}
+PO_U_logls_mi <- extract_logls(ex1_Qs_mi,
+                            numer = c(PO = 1),
+                            denom = c(U = 1))
+
+ggplot(PO_U_logls_mi,
+            aes(x = logl_ratio, fill = true_relat)) +
+  geom_density(alpha = 0.25) +
+  #scale_x_continuous(limits=c(-400,225)) +
+  scale_y_continuous(name="", breaks=NULL) + 
+  theme_light() #+
+  #annotate("text", label = "microhap", x = -300, y = 0.025, size = 8)
+```
+
+
+distributions are much closer together, as expected.
+
+
+Make comparisons and plot logls.
+```{r}
+candidate_parents_mi <- long_genos_mi %>% 
+  filter(Indiv %in% brood_samples)
+
+candidate_offspring_mi <- long_genos_mi %>% 
+  filter(Indiv %in% spat_samples)
+
+po_pairwise_mi <- pairwise_kin_logl_ratios(D1 = candidate_parents_mi, 
+                                              D2 = candidate_offspring_mi, 
+                                              CK = ex1_ckmr_mi,
+                                              numer = "PO",
+                                              denom = "U")
+ckmr_micro2join <- po_pairwise_logls %>%
+  arrange(desc(logl_ratio)) %>%
+  group_by(D2_indiv) %>% 
+  mutate(rank_assign = row_number(),
+    tmp_id = paste0(D2_indiv, "_", D1_indiv)) %>%
+  ungroup() %>%
+  dplyr::select(tmp_id, logl_ratio, rank_assign)
+
+logls_mi2plot<- po_pairwise_mi %>% arrange(D2_indiv, desc(logl_ratio)) %>%
+  mutate(tmp_id = paste0(D2_indiv, "_", D1_indiv)) %>%
+  left_join(.,ckmr_micro2join , "tmp_id") %>% 
+  filter(tmp_id %in% rels4mendel$tmp_id) %>%
+  rename(logl_ratio = logl_ratio.x)
+  
+mendel_panel_plot <- ggplot() +
+  geom_density(data=PO_U_logls_mi,
+            aes(x = logl_ratio, fill = true_relat), alpha = 0.25) +
+  geom_point(data=logls_mi2plot, aes(x=logl_ratio, y = 0.001)) +
+  #scale_x_continuous(limits=c(-400,225)) +
+  scale_y_continuous(name="density") + 
+  theme_light() #+
+  #ggtitle("microhap panel with Mendelian panel")
+  #annotate("text", label = "microhap", x = -300, y = 0.025, size = 8)
+mendel_panel_plot
+
+#ggsave("../data-microtyper/plots/log-likelihood-mendelian-panel-assignments-expected.pdf", width=7, height=4.5)
+#saveRDS(mendel_panel_plot,"../tmp-plot-microhap-mendelianPanel.rds")
+```
+
+That plot is pretty damn compelling that the shift in likelihood is due to the
+abundance of mendelian incompatibilites in the bigger microhap dataset.
+
+whats the genotype depth of MI loci on average?
+
+```{r}
+long_genos %>%
+  filter(!Locus %in% long_genos_mi$Locus) %>% #keep loci not in the mendel incompatibility data (so the violators)
+  inner_join(., genos_processed, join_by(Indiv==indiv.ID, Locus==locus,Allele==haplo)) %>% #many to many relats, deal with next
+  distinct(Indiv,Locus,.keep_all=T) %>% #retain 1 row per indiv.
+  group_by(Locus) %>%
+    summarise(mean_Depth = mean(depth_total)) %>% 
+  arrange(mean_Depth) 
+
+long_genos %>%
+  filter(!Locus %in% long_genos_mi$Locus) %>% #keep loci not in the mendel incompatibility data (so the violators)
+  inner_join(., genos_processed, join_by(Indiv==indiv.ID, Locus==locus,Allele==haplo)) %>% #many to many relats, deal with next
+  distinct(Indiv,Locus,.keep_all=T) %>% #retain 1 row per indiv.
+  #group_by(Locus) %>%
+    summarise(mean_Depth = mean(depth_total)) 
+```
+
+I should make the all comparisons by kid plot for the MI panel.
+
+```{r,MI-allkids-allcomps-plot}
+po_meta_long <- meta_po %>%
+  dplyr::select(indiv_id, sire, dam) %>%
+  pivot_longer(-1, names_to = "sex", values_to = "brood_id")
+
+mi_po <- po_pairwise_mi %>%
+  left_join(., po_meta_long, by =c("D2_indiv"="indiv_id","D1_indiv" = "brood_id")) %>%
+  arrange(D2_indiv, desc(logl_ratio)) %>%
+  group_by(D2_indiv) %>%
+  left_join(., brood_fams, by =c("D1_indiv" = "indiv_id")) %>%
+  left_join(., spat2broodfam, by =c("D2_indiv" = "indiv_id")) %>%
+  mutate(rel_type = case_when(
+    sex%in%c("sire", "dam") ~ "PO",
+    is.na(sex)&(fam_corrected==sire|fam_corrected==dam) ~ "AN",
+    !(fam_corrected==sire|fam_corrected==dam) ~ "U")) %>%
+  ungroup(.) %>%
+  ggplot(., aes(x=D2_indiv,y=logl_ratio, colour = rel_type, fill=rel_type)) +
+           geom_point()  +
+  scale_y_continuous(name = "log likelihood ratio")+
+  scale_x_discrete(name = "Offspring") +
+  theme_light() +
+  theme(axis.text.x = element_text(angle = 65, vjust = 1.1, hjust=1.15)) +
+    guides(fill = guide_legend(title = "Relationship type"),
+           colour = guide_legend(title = "Relationship type"))
+
+mi_po
+#saveRDS(mi_po,"../tmp-plot-microhap-reltype-logl-mendelianPanel.rds")
+```
+
+
+
+#Sidequest Le Fin.

@@ -1,0 +1,331 @@
+---
+title: "07-MAF-snp-parentage-analysis"
+author: "Neil Thompson"
+date: "2024-04-17"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+## parentage analysis using the highest MAF SNP from within each amplicon.
+
+steps/workflow
+
+1. use only singly mapped amplicons --> done in microhaplotype processing
+2. explode microhap alleles into SNPs
+3. calculate per locus allele frequency
+4. select SNP with MAF closest to 0.5 from within each SNP.
+5. CKMR parentage assignments.
+
+```{r, load-libraries}
+library(tidyverse)
+```
+
+
+```{r,load-processed-microhaps}
+genos_processed <- readRDS("../data-microtyper/microtyper-processed-haplotypes-USDA.rds")
+#genos_processed %>% distinct(locus) #481 loci
+#genos_processed %>% count(indiv.ID,locus) %>%distinct(n) #each indiv has 2 alleles. sweet.
+```
+
+I'm going to explode microhaplotypes into SNPs and calc AF in one function.
+3. explode into SNPs and per locus AF
+
+```{r, map-maf-function}
+genos_by_loc <- genos_processed %>%
+    group_split(locus)
+
+slurp_af <- function(x){
+ genos <- data.frame(x)
+ 
+ n_nuc <- genos %>%
+  filter(!is.na(haplo)) %>% 
+  slice(1) %>%
+  mutate(n_nuc = nchar(haplo)) %>% 
+  pull(n_nuc)
+ 
+ blast_ids <- tibble(nuc_num = 1:n_nuc) %>%
+  mutate(blast_id = paste0("a",nuc_num)) %>% pull(blast_id)
+  
+ maf_df <- genos %>%separate(haplo, into = blast_ids, sep=seq(1:(n_nuc-1))) %>%
+  dplyr::select(-c("allele.balance", "depth_total", "gt_type", "rank"))%>%
+  dplyr::select(indiv.ID, locus, depth, everything()) %>%
+  pivot_longer(-c(indiv.ID, locus, depth), names_to ="snp_read", values_to = "snp") %>% 
+  group_by(snp_read) %>%
+  count(locus,snp) %>%
+  mutate(af = n/sum(n),
+         snp_pos = str_extract(snp_read,"[0-9]{1,2}") %>% as.numeric(.)) %>%
+  slice(which.min(af)) %>% #selects the minor allele frequency. if af = 1 then its monomorphic.
+  ungroup(.) %>%
+  dplyr::select(locus, snp, snp_pos, n, af)
+ 
+}
+#map_df(genos_by_loc[1], slurp_af) #testing
+af_all_loci <- map_df(genos_by_loc, slurp_af)
+#af_all_loci %>% group_by(locus)%>% filter(any(af==1.00)) #arrange(desc(af))
+head(af_all_loci)
+```
+
+#select the highest MAF snp per locus
+```{r}
+maf_snp <- af_all_loci %>%
+  filter(af < 1.00) %>% #remove monomorphic SNPs
+  arrange(desc(af)) %>%
+  group_by(locus) %>% 
+  slice(1) %>% ungroup() 
+head(maf_snp)
+```
+
+filter microhaplotypes to retain only the highest MAF snp
+```{r}
+maf_genos <- genos_processed %>%
+  left_join(., maf_snp%>%dplyr::select(locus,snp_pos), "locus") %>% 
+  mutate(maf_snp = str_sub(haplo,snp_pos,snp_pos)) %>%
+  dplyr::select(indiv.ID, locus, maf_snp, depth, rank, gt_type)
+
+maf_genos %>%
+  distinct(locus)
+```
+
+CKMR parentage analysis.
+
+QC: remove samples with less than 75 percent scored, remove bad loci that have
+less than 85 pct scored.
+
+```{r}
+bad_indivs <- 
+  maf_genos %>%
+  filter(!is.na(maf_snp)) %>%
+  count(indiv.ID) %>%
+  mutate(pct_scored = (n/2)/ (maf_genos%>%distinct(locus)%>%nrow(.))) %>%
+  filter(pct_scored<0.75) %>% pull(indiv.ID)
+
+bad_loci <- 
+  maf_genos %>%
+  filter(!is.na(maf_snp)) %>%
+  count(locus) %>%
+  mutate(pct_scored = (n/2)/ (maf_genos%>%distinct(indiv.ID)%>%nrow(.))) %>% 
+  filter(pct_scored<0.85) %>% pull(locus)
+
+mono_loci <- maf_genos %>%
+  group_by(locus) %>%
+  summarise(n_haplo = n_distinct(maf_snp)) %>% filter(n_haplo==1) %>%
+  ungroup(.) %>% pull(locus)
+```
+
+There are `r length(bad_indivs)` poor individual samples to remove and there 
+are `r length(bad_loci)` poor loci to remove from the dataset.
+
+```{r, prep-ckmr-data}
+library(CKMRsim)
+
+ckmr_genos <- maf_genos %>%
+  filter(!indiv.ID %in% bad_indivs, #indiv missing filter
+         !locus %in% bad_loci, #locus missing filter
+         !locus %in% mono_loci) %>% #locus monomorphic filter
+  rename(Indiv = indiv.ID,
+         Locus = locus,
+         gene_copy = rank,
+         Allele = maf_snp)
+
+alle_freqs <- ckmr_genos %>% 
+  count(Locus, Allele) %>%
+  group_by(Locus) %>%
+  mutate(Freq = n / sum(n),
+         Chrom = "Unk",
+         Pos = cur_group_id()) %>%
+  ungroup() %>%
+  select(Chrom, Pos, Locus, Allele, Freq) %>%
+  arrange(Pos, desc(Freq)) %>%
+  mutate(AlleIdx = NA,
+         LocIdx = NA) %>%
+  filter(!is.na(Allele))
+```
+index the AF data and move on.
+```{r, index-AF}
+afreqs_ready <- reindex_markers(alle_freqs)
+```
+
+compare to mh genos
+```{r}
+mh_genos <- readRDS("../data-ckmr/ckmr-long-genos-microhaps-filtered.rds")
+
+#ckmr_genos %>% distinct(Indiv)
+
+mh_genos %>% distinct(Indiv) %>%
+  mutate(maf_indiv = Indiv %in% ckmr_genos$Indiv) %>%
+  filter(maf_indiv==FALSE) #which samples arent in the MAF data
+
+meta_pops <- read_xlsx("../data/thermofisher-sutherland-allsamples_metadata.xlsx", 
+                       sheet = "metadata_pops")
+
+meta_pops %>% filter(indiv_id %in% c("G001946", "G005418"))
+
+tibble(indiv_id = bad_indivs) %>% filter(indiv_id %in% c("G001946", "G005418")) #both missing genos didnt pass genotyping success of 75% or more filter
+```
+2 missing samples are because they didnt pass 75% or more genotyping success filter
+
+simulate relationships and calc logls.
+```{r, sim-relats}
+ex1_snp <- create_ckmr(
+  D = afreqs_ready,
+  kappa_matrix = kappas[c("PO", "FS", "AN", "U"), ],
+  ge_mod_assumed = ge_model_TGIE,
+  ge_mod_true = ge_model_TGIE,
+  ge_mod_assumed_pars_list = list(epsilon = 0.005),
+  ge_mod_true_pars_list = list(epsilon = 0.005)
+)
+
+ex1_snp#370 loci left. 
+
+ex1_Qs <- simulate_Qij(ex1_snp, 
+                       calc_relats = c("PO", "FS","AN", "U"), #assumed relationships
+                       sim_relats = c("PO", "FS", "AN", "U") ) # true relationships
+```
+false positive rates calculation
+FPR at FNR of 0.01 for PO-U
+```{r,PO-U-fpr}
+#estimate FPR with PO_U relats
+mc_sample_simple(ex1_Qs, 
+                 nu = "PO",
+                 de = "U")
+```
+PO-AN false positive rate
+```{r, fpr-po-an}
+mc_sample_simple(ex1_Qs, 
+                 nu = "PO",
+                 de = "AN")
+```
+PO-FS false positive rates
+```{r, fpr-po-FS}
+mc_sample_simple(ex1_Qs, 
+                 nu = "PO",
+                 de = "FS")
+```
+calc logl distributions from simulation and plot em
+```{r}
+PO_U_snps <- extract_logls(ex1_Qs,
+                            numer = c(PO = 1),
+                            denom = c(U = 1))
+
+snp_logls <- ggplot(PO_U_snps,
+            aes(x = logl_ratio, fill = true_relat)) +
+  geom_density(alpha = 0.25) +
+  scale_x_continuous(limits=c(-400,225), name="") +
+  scale_y_continuous(name = "density") +
+  annotate("text", label = "MAF SNP", x = -300, y = 0.0425, size = 6)
+
+snp_logls
+
+#save this for making figure
+#saveRDS(snp_logls, "../tmp-plot-mafSNP-usda-logl-dist.RDS") 
+```
+
+find duplicate samples
+```{r}
+find_close_matching_genotypes(LG = ckmr_genos %>%dplyr::select("Indiv", "Locus", "gene_copy", "Allele"),
+                                          CK = ex1_snp,
+                                          max_mismatch = 5)
+```
+
+G005498 and G005499 are known from previous runs. 
+G001945 and G001951 were known from mhap run and were not broodstock or spat.
+
+time for parentage!
+do the Parent-Kid comparisons
+```{r,ckmrsim-PO-comparisons}
+meta_pops <- read_xlsx("../data/thermofisher-sutherland-allsamples_metadata.xlsx", 
+                       sheet = "metadata_pops")
+
+brood_samples <- meta_pops %>%
+  filter(life_stage=="broodstock") %>%
+  filter(!indiv_id == "G005499") %>% #remove duplicate
+  pull(indiv_id)
+
+spat_samples <- meta_pops %>%
+  filter(str_detect(life_stage, "spat")) %>%
+  pull(indiv_id)
+
+candidate_parents <- ckmr_genos %>% 
+  filter(Indiv %in% brood_samples) %>%
+  dplyr::select("Indiv", "Locus", "gene_copy", "Allele")
+
+candidate_offspring <- ckmr_genos %>% 
+  filter(Indiv %in% spat_samples) %>%
+  dplyr::select("Indiv", "Locus", "gene_copy", "Allele")
+
+po_pairwise_logls <- pairwise_kin_logl_ratios(D1 = candidate_parents, 
+                                              D2 = candidate_offspring, 
+                                              CK = ex1_snp,
+                                              numer = "PO",
+                                              denom = "U")
+
+po_pairwise_logls %>% head(20)
+```
+plot the results with brood sex included
+```{r, plot-PO}
+meta_po <- read_xlsx("../data/thermofisher-sutherland-allsamples_metadata.xlsx", 
+                     sheet = "metadata_PO")
+brood_sex <- meta_po %>%
+  dplyr::select(indiv_id, sire, dam) %>%
+  pivot_longer(-1, names_to = "sex", values_to = "brood_id")
+
+brood_fams <- meta_pops %>%
+  dplyr::select(indiv_id, fam, pop) %>%
+  mutate(fam_corrected = 
+           case_when(
+             str_detect(fam, "^2016") ~ paste0("2016-", str_sub(fam,-2,-1)),
+             str_detect(fam, "^YC") ~ fam, 
+             str_detect(fam, "^W") ~ fam,
+             str_detect(fam, "^[0-9]{2}_") ~ paste0(str_sub(fam,1,6)),
+             str_detect(fam, "^F") ~ fam,
+           )) %>%
+  dplyr::select(-fam)
+
+spat2broodfam <- brood_sex %>%
+  left_join(., brood_fams, by=c("brood_id" = "indiv_id")) %>%
+  dplyr::select(indiv_id, sex, fam_corrected) %>%
+  pivot_wider(., values_from = "fam_corrected", names_from = "sex")
+
+po_maf_plot <- po_pairwise_logls %>%
+  left_join(., brood_sex, by =c("D1_indiv" = "brood_id", "D2_indiv"="indiv_id")) %>%
+  arrange(D2_indiv, desc(logl_ratio)) %>%
+  group_by(D2_indiv) %>%
+  left_join(., brood_fams, by =c("D1_indiv" = "indiv_id")) %>%
+  left_join(., spat2broodfam, by =c("D2_indiv" = "indiv_id")) %>%
+  mutate(rel_type = case_when(
+    sex%in%c("sire", "dam") ~ sex,
+    is.na(sex)&(fam_corrected==sire|fam_corrected==dam) ~ "AN",
+    !(fam_corrected==sire|fam_corrected==dam) ~ "U")) %>%
+  ungroup(.) %>%
+  left_join(., brood_fams, by =c("D2_indiv"="indiv_id")) %>%
+  rename(kid_pop = pop.y,
+         pop = pop.x) %>%
+  mutate(rel_type = case_when(
+    rel_type%in%c("sire","dam") ~"PO",
+    rel_type=="U" ~"U",
+    rel_type=="AN" ~ "AN"
+  )) %>%
+  ggplot(., aes(x=D2_indiv,y=logl_ratio, colour = rel_type, fill=rel_type)) +
+           geom_point()  +
+  scale_y_continuous(name = "log likelihood ratio", limits = c(-550,175), breaks = seq(-550,150,50))+
+  scale_x_discrete(name = "kids") +
+  theme_light() +
+  theme(axis.text.x = element_text(angle = 65, vjust = 1.1, hjust=1.15)) #+
+  #facet_grid(.~kid_pop, scales="free_x")
+
+po_maf_plot
+#saveRDS(po_maf_plot, "../tmp-plot-mafSNP-usda-PO-logl-dist.RDS")
+```
+
+
+save assignments to file to compare with mhap and MAF-snp analyses
+```{r, save-PO-assignments}
+po_pairwise_logls %>%
+  arrange(D2_indiv, desc(logl_ratio)) #%>%
+  #saveRDS(., "../data-ckmr/ckmr-po-mafSNP-USDA.rds", compress="xz")
+```
+
+#Le fin.

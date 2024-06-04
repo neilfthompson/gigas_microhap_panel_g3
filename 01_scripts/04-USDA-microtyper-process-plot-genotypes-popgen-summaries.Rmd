@@ -1,0 +1,637 @@
+---
+title: "microtyper-data-processing"
+author: "Neil Thompson"
+date: "2023-12-01"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+## check out the run stats for microtyper called haplotypes
+
+```{r, libraries}
+library(tidyverse)
+library(readxl)
+library(knitr)
+library(kableExtra)
+```
+
+read in raw microtyper data
+```{r}
+tom_genos <- read_tsv("../data-microtyper/sutherland_usda_read_counts.txt")
+
+id_meta <- read_xls("../data_thermofisher/thermofisher-gigas-agriseq-hotspot-snp.xls",
+                    n_max = 5, col_names = T) %>%
+  dplyr::select(contains("Ion")) 
+
+df_meta <- tibble(sample_id = colnames(id_meta)) %>%
+  separate(sample_id, into =c("ars_id", "thermo_id"), sep = ";") #thermo id to indiv_id
+
+head(tom_genos) %>%
+  mutate(count = ifelse(Count=="noReads",0,Count)%>%as.numeric(.),
+         haplo = ifelse(Allele=="noReads", NA, Allele),
+         thermo_id = str_sub(Indiv, -16,-5)) %>%
+  left_join(., df_meta, "thermo_id") %>%
+  rename(indiv_id = ars_id) %>%
+  dplyr::select(indiv_id, Locus, haplo, count) #thats where we want to get.
+
+tom_genos %>% count(Locus, Allele) %>%
+  group_by(Locus) %>%
+  mutate(n_alleles = n()) %>%
+  filter(n_alleles==1) # one locus completely failed and had no reads aligned to it, but that locus didn't map to a chrom anyway so we're not losing anything.
+```
+
+Keep loci that only map to 1 location on a chromosome
+```{r}
+sam <- read.table("../data/sutherland_snp_panel_bowtie2_map.sam", 
+                  header = FALSE, sep = "\t", fill = TRUE)
+
+loci2keep <- 
+  sam %>%
+  group_by(V1) %>%
+  mutate(n_aligns = n()) %>% ungroup() %>%
+  filter(n_aligns==1,
+         str_detect(V3, "^NC_"))  %>% 
+  dplyr::select(V1, V3, V4, V6)
+```
+
+make a raw genos df to summarise the run on.
+raw genos is all haplotypes called with no filtering.
+
+```{r}
+genos_raw <- tom_genos %>% 
+  filter(Locus %in% loci2keep$V1) %>% #keep only single mapping loci
+  mutate(count = ifelse(Count=="noReads",0,Count)%>%as.numeric(.),
+         haplo = ifelse(Allele=="noReads", NA, Allele),
+         thermo_id = str_sub(Indiv, -16,-5)) %>%
+  left_join(., df_meta, "thermo_id") %>%
+  rename(indiv_id = ars_id) %>%
+  left_join(., loci2keep, by=c("Locus"="V1")) %>%
+  mutate(chrom_pos = paste0("NC", str_sub(V3,4,-3),"_",V4)) %>%
+  dplyr::select(indiv_id, chrom_pos, haplo, count)
+
+#genos_raw %>% distinct(chrom_pos)
+```
+
+Plots to make on raw data and on final genotype data
+1. read depth per locus
+2. read depth per indiv
+3. haplotypes per locus
+
+plot total read counts per locus
+```{r, plot-total-counts-per-locus}
+genos_raw %>%
+ # separate(chrom_pos, into = c("chrom", "pos"), sep = "_") %>%
+  group_by(chrom_pos) %>%
+  summarise(tot_reads = sum(count)) %>% arrange(tot_reads) %>%
+  mutate(chrom_posf = factor(chrom_pos, levels = chrom_pos)) %>%
+  ggplot(., aes(x=fct_reorder(chrom_pos, tot_reads), y=tot_reads)) +
+  geom_point() +scale_x_discrete(name="locus")+
+      theme(axis.text.x = element_text(angle = 90))+
+  ggtitle("total reads per locus unprocessed data")
+
+#ggsave("../data-microtyper/plots/total-reads-per-locus-unfiltered.pdf")
+```
+
+total mapped reads per indiv unfiltered data
+
+```{r,plot-total-reads-per-indiv}
+genos_raw %>%
+  group_by(indiv_id) %>%
+  summarise(tot_reads = sum(count),
+            mean_reads = mean(count),
+            sd_reads = sd(count)) %>%
+  ungroup() %>% arrange(desc(tot_reads)) %>% 
+  ggplot(., aes(x=fct_reorder(indiv_id,tot_reads), y=tot_reads)) +geom_point() +
+  scale_x_discrete(name="indiv_id")+
+      theme(axis.text.x = element_text(angle = 90)) +
+  ggtitle("total reads per indiv unprocessed data")
+
+#ggsave("../data-microtyper/plots/total-raw-reads-per-indiv-unfiltered.pdf")
+```
+how many high rollers and what percentage of total reads do they eat up?
+```{r}
+genos_raw %>%
+  group_by(indiv_id) %>%
+  summarise(tot_reads = sum(count),
+            mean_reads = mean(count),
+            sd_reads = sd(count)) %>%
+  ungroup() %>%
+  mutate(hi_roller = case_when(
+    tot_reads>=1000000 ~"hi_roller",
+    tot_reads<1000000 ~"normal"
+  )) %>% 
+  group_by(hi_roller) %>%
+  mutate(reads_n = 
+           sum(tot_reads),
+         tot_indiv = n_distinct(indiv_id)) %>%
+  distinct(reads_n,.keep_all = TRUE) %>%
+  ungroup() %>%
+  mutate(pct_reads = reads_n/sum(reads_n)) %>% dplyr::select(hi_roller, tot_indiv, pct_reads)
+```
+
+7 individuals eat up 24.6% of the reads.
+
+reads per loc per indiv.
+
+```{r}
+genos_raw %>%
+  arrange(indiv_id, chrom_pos, desc(count)) %>%
+  group_by(indiv_id, chrom_pos) %>%
+    mutate(ab = count/max(count),
+           n_haplo = n(),
+           hap_rank = row_number()) %>%
+  filter(!n_haplo==1, chrom_pos=="NC047559_10330737") %>%
+  ungroup() %>% arrange(chrom_pos) %>% filter (ab>=0.3) %>%
+  group_by(indiv_id) %>% filter(n()==2) %>%
+  ggplot(., aes(x=as.factor(hap_rank), y = ab)) + 
+  geom_boxplot()
+```
+
+how many loci are microhaps?
+```{r}
+genos_raw %>%
+  filter(!nchar(haplo)==1) %>% 
+  distinct(chrom_pos,.keep_all=T) %>%
+  nrow(.)
+```
+
+there are `r genos_raw%>%distinct(chrom_pos)%>%nrow(.)` total loci in the genos_raw
+
+#process data with microhaplotpia functions.
+
+filter_raw to get processed genos for CKMRsim
+find_contam to identify indivs that have more than 2 alleles passing filter.
+
+input df needs 4 columns:
+indiv.ID, locus, haplo, depth 
+
+```{r, raw-haplo-filter-function, message=FALSE}
+filter_raw_microhap_data <- function(hap_raw,
+                                     haplotype_depth,
+                                     total_depth,
+                                     allele_balance,
+                                     retain_x_haps = FALSE) {
+
+  if (retain_x_haps == FALSE) {
+
+    hap_fil1 <- hap_raw %>%
+      filter(!str_detect(haplo, "N|X"),
+             depth >= haplotype_depth) %>%
+      arrange(indiv.ID, locus, desc(depth)) %>%
+      group_by(indiv.ID, locus) %>%
+      mutate(rank = row_number(),
+             allele.balance = depth / depth[1]) %>%
+      filter(allele.balance >= allele_balance) %>%
+      mutate(gt_type = ifelse(n() > 1, "het", "hom"),
+             depth_total = ifelse(gt_type == "het", sum(depth[1], depth[2]), depth)) %>%
+      ungroup() %>%
+      filter(depth_total >= total_depth)
+  } else {
+    hap_fil1 <- hap_raw %>%
+      filter(!str_detect(haplo, "N"),
+             depth >= haplotype_depth) %>%
+      arrange(indiv.ID, locus, desc(depth)) %>%
+      group_by(indiv.ID, locus) %>%
+      mutate(rank = row_number(),
+             allele.balance = depth / depth[1]) %>%
+      filter(allele.balance >= allele_balance) %>%
+      mutate(gt_type = ifelse(n() > 1, "het", "hom"),
+             depth_total = ifelse(gt_type == "het", sum(depth[1], depth[2]), depth)) %>%
+      ungroup() %>%
+      filter(depth_total >= total_depth)
+  }
+
+  homozygotes2add <- hap_fil1 %>% filter(gt_type == "hom") %>% mutate(rank = 2)
+
+  long_genos <- bind_rows(hap_fil1, homozygotes2add) %>%
+    group_by(indiv.ID, locus) %>%
+    mutate(n_rows = n()) %>%
+    ungroup() %>%
+    filter(n_rows == 2) %>%
+    dplyr::select(-n_rows) %>%
+    arrange(indiv.ID, locus)
+
+  long_genos
+}
+
+find_contaminated_samples <- function(raw_data,
+                                      haplotype_depth,
+                                      total_depth,
+                                      allele_balance) {
+
+  hap_fil1 <- raw_data %>%
+    filter(!str_detect(haplo, "N|X"),
+           depth >= haplotype_depth) %>%
+    arrange(indiv.ID, locus, desc(depth)) %>%
+    group_by(indiv.ID, locus) %>%
+    mutate(rank = row_number(),
+           allele.balance = depth / depth[1]) %>%
+    filter(allele.balance >= allele_balance) %>%
+    mutate(gt_type = ifelse(n() > 1, "het", "hom"),
+           depth_total = ifelse(gt_type == "het", sum(depth[1], depth[2]), depth)) %>%
+    ungroup() %>%
+    filter(depth_total >= total_depth)
+
+  homozygotes2add <- hap_fil1 %>% filter(gt_type == "hom") %>% mutate(rank = 2)
+
+  long_genos <- bind_rows(hap_fil1, homozygotes2add) %>%
+    group_by(indiv.ID, locus) %>%
+    mutate(n_rows = n()) %>%
+    ungroup() %>%
+    filter(n_rows > 2)
+
+  long_genos
+
+}
+```
+
+filter the count data for 
+haplotype depth >=5
+total depth >=20,
+allele.balance >=0.30
+
+```{r, process-raw-count-geno-data}
+genos_processed <- filter_raw_microhap_data(
+  genos_raw%>%rename(indiv.ID = indiv_id, locus = chrom_pos, depth=count),
+  5,
+  20,
+  0.3)
+```
+
+remake plots 
+total reads per locus
+```{r}
+genos_processed %>%
+  rename(indiv_id=indiv.ID, chrom_pos=locus, count= depth) %>%
+  distinct(indiv_id, chrom_pos, .keep_all = TRUE) %>% #get 1 row per locus per indiv
+  group_by(chrom_pos) %>%
+  summarise(tot_reads = sum(depth_total)) %>% 
+  ggplot(., aes(x=fct_reorder(chrom_pos, tot_reads), y=tot_reads)) +
+  geom_point() +
+  scale_x_discrete(name = "locus", breaks = NULL,expand=c(0, 5)) +
+  scale_y_continuous("total reads")+
+      theme(axis.text.x = element_blank()) +
+  theme_light()
+  ggtitle("reads per locus filtered data")
+
+#ggsave("../data-microtyper/plots/total-reads-per-locus-filtered.pdf", width = 7, height=4)
+```
+
+no real difference in shape, the y-axis magnitude changed.
+
+processed reads per indiv
+```{r}
+genos_processed %>%
+  rename( indiv_id=indiv.ID, chrom_pos=locus ,count= depth) %>%
+  distinct(indiv_id, chrom_pos, .keep_all = TRUE) %>% #get 1 row per locus per indiv
+  group_by(indiv_id) %>%
+  summarise(tot_reads = sum(depth_total),
+            mean_reads = mean(depth_total),
+            sd_reads = sd(depth_total)) %>%
+  ungroup() %>% 
+  ggplot(., aes(x = fct_reorder(indiv_id, tot_reads), y=tot_reads)) +
+  geom_point() + scale_x_discrete(name = "individuals", breaks = NULL,expand=c(0, 5)) +
+  scale_y_continuous(name= "total reads") +
+      theme(axis.text.x=element_blank()) +
+  theme_light()
+  ggtitle("total reads per indiv filtered")
+
+#ggsave("../data-microtyper/plots/total-reads-per-indiv-filtered.pdf", width=7, height=4)
+```
+
+whats the percentage of reads eaten up by whales and hi rollers?
+```{r}
+genos_processed %>%
+  rename( indiv_id=indiv.ID, chrom_pos=locus ,count= depth) %>%
+  distinct(indiv_id, chrom_pos, .keep_all = TRUE) %>% #get 1 row per locus per indiv
+  group_by(indiv_id) %>%
+  summarise(tot_reads = sum(depth_total),
+            mean_reads = mean(depth_total),
+            sd_reads = sd(depth_total)) %>%
+  ungroup() %>%
+  mutate(indiv_type = case_when(
+    tot_reads >=1e6 ~"whale",
+    tot_reads>=500000&tot_reads<1e6 ~"hi_roller",
+    tot_reads<500000 ~"normal"
+  )) %>%
+  group_by(indiv_type) %>%
+  mutate(tot_read_grp = sum(tot_reads),
+         n_indiv = n_distinct(indiv_id)) %>%
+  distinct(indiv_type, .keep_all=TRUE) %>%
+  dplyr::select(indiv_type, tot_read_grp, n_indiv) %>%
+  ungroup() %>%
+  mutate(pct_reads = tot_read_grp/sum(tot_read_grp))
+```
+whales have >1 million reads
+hi rollers are 500,000 to 1,000,000 reads
+normal are < 500,000 reads
+
+
+how many loci scored per indiv?
+```{r}
+genos_processed %>%
+  distinct(indiv.ID, locus) %>%
+  count(indiv.ID) %>%
+  ggplot(., aes(x=fct_reorder(indiv.ID, n), y = n)) + 
+  geom_point() +
+  scale_x_discrete(name = "individuals", breaks = NULL, expand=c(0, 5)) +
+  scale_y_continuous(name= "# scored loci") +
+      theme(axis.text.x=element_blank()) +
+  theme_light()
+
+#ggsave("../data-microtyper/plots/loci-per-indiv-filtered.pdf", width=7, height=4)
+```
+
+
+number of haplos per locus
+```{r}
+genos_processed  %>%
+  group_by(locus) %>%
+      summarise(n_haps = n_distinct(haplo)) %>%
+      ggplot(., aes(x = fct_reorder(locus, n_haps), y = n_haps)) +
+      geom_point() +
+      scale_x_discrete(name = "locus") +
+      theme(axis.text.x = element_text(angle = 90)) +
+  ggtitle("number of haplotypes per locus filtered data")
+
+#ggsave("../data-microtyper/plots/number-processed-allele-per-locus.pdf")
+```
+
+what is the percent heterozygosity per sample?
+
+```{r, heterozygosity-per-indiv}
+het_tbl <- genos_processed %>% group_by(indiv.ID,locus) %>% slice(1) %>%
+  ungroup() %>%
+  count(indiv.ID, gt_type) %>%
+  group_by(indiv.ID) %>%
+  mutate(pct_heterozygous = case_when(
+    gt_type=="het" ~ round(n/sum(n),3),
+    gt_type=="hom" ~ NA),
+    tot_loci = sum(n)) %>%
+  filter(!is.na(pct_heterozygous))
+
+het_tbl %>%
+  kable("html") %>%
+  kable_styling("striped")
+
+ggplot(het_tbl, aes(x=tot_loci, y = pct_heterozygous)) +
+  geom_point()
+```
+
+what is percentage of filtered reads vs total reads per sample?
+```{r}
+indiv_raw_counts <- genos_raw %>% group_by(indiv_id) %>%
+  summarise(total_raw_reads = sum(count)) %>% ungroup() 
+
+genos_processed %>%
+  rename( indiv_id=indiv.ID, chrom_pos=locus ,count= depth) %>%
+  distinct(indiv_id, chrom_pos, .keep_all = TRUE) %>% #get 1 row per locus per indiv
+  group_by(indiv_id) %>%
+  summarise(tot_reads = sum(depth_total),
+            mean_reads = mean(depth_total),
+            sd_reads = sd(depth_total),
+            n_loci = n_distinct(chrom_pos)) %>%
+  ungroup()  %>%
+  left_join(., indiv_raw_counts, "indiv_id") %>%
+  mutate(pct_ontarget = tot_reads/total_raw_reads) %>%
+  ggplot(., aes(x=fct_reorder(indiv_id, pct_ontarget), y = pct_ontarget)) +
+  geom_point() +
+  scale_x_discrete(name = "individuals", breaks = NULL, expand=c(0, 5)) +
+  scale_y_continuous(name= "percentage of reads in final genotype", breaks =seq(0,1,0.05)) +
+      theme(axis.text.x=element_blank()) +
+  theme_light()
+
+#ggsave("../data-microtyper/plots/percentage-reads-final-genotype-indiv.pdf", width=7, height=4)
+```
+
+
+how does percent on target compare to number of loci scored?
+```{r}
+genos_processed %>%
+  rename( indiv_id=indiv.ID, chrom_pos=locus ,count= depth) %>%
+  distinct(indiv_id, chrom_pos, .keep_all = TRUE) %>% #get 1 row per locus per indiv
+  group_by(indiv_id) %>%
+  summarise(tot_reads = sum(depth_total),
+            mean_reads = mean(depth_total),
+            sd_reads = sd(depth_total),
+            n_loci = n_distinct(chrom_pos)) %>%
+  ungroup()  %>%
+  left_join(., indiv_raw_counts, "indiv_id") %>%
+  mutate(pct_ontarget = tot_reads/total_raw_reads) %>%
+  ggplot(., aes(x=pct_ontarget, y = n_loci)) +
+  geom_point() +
+  #scale_x_discrete(name = "individuals", breaks = NULL, expand=c(0, 5)) +
+  scale_x_continuous(name= "percentage on target reads", breaks =seq(0,1,0.05)) +
+   #   theme(axis.text.x=element_blank()) +
+  theme_light()
+```
+
+lastly what about contaminated samples? These are indivs who have more than 2
+alleles pass the microhaplotopia QC filters.
+
+```{r,contaminated-samples-df}
+contam_samps <- find_contaminated_samples(
+  genos_raw%>%rename(indiv.ID = indiv_id, locus = chrom_pos, depth=count), 
+  5,20,0.3) %>%
+  distinct(indiv.ID, locus) %>%
+  count(indiv.ID)  
+
+#write_rds(contam_samps, "../data-microtyper/microtyper-contaminated-samples-USDA.rds")
+```
+
+
+#write RDS of processed genotype data for further analysis
+```{r}
+#write_rds(genos_processed, "../data-microtyper/microtyper-processed-haplotypes-USDA.rds", compress="xz")
+#genos_processed <- readRDS("../data-microtyper/microtyper-processed-haplotypes-USDA.rds")
+```
+
+
+Calc haplotype allele freqs and number of alleles per locus
+```{r}
+af_mhap <- genos_processed %>%
+  count(locus, haplo) %>%
+  group_by(locus) %>%
+  mutate(freq = n / sum(n),
+         n_allele = n(),
+         chrom = str_extract(locus, "NC[0-9]{6}"),
+         pos = str_extract(locus, "_[0-9]{1,8}")%>%str_replace(., "_","")) %>%
+  ungroup() %>%
+  select(chrom, pos, locus, haplo, freq, n_allele)
+
+#grab the highest MAF mhap from each locus and plot it.
+
+af_mhap %>%
+  arrange(locus, desc(freq)) %>%
+  group_by(locus) %>%
+  slice(1) %>% ungroup(.) %>%
+  #filter(chrom=="NC047559") %>%
+  mutate(pos=as.numeric(pos)) %>%
+  ggplot(., aes(x=pos, y=freq)) +
+  geom_point(aes(size=n_allele))+
+  #scale_y_continuous(breaks=seq(0,1,0.1)) +
+  theme(axis.text.x = element_text(angle = 70, hjust=1)) +
+  facet_grid(rows = vars(chrom), scales = "free_x")
+
+```
+
+do the allele freqs by population
+```{r}
+meta_pop <- read_xlsx("../data/thermofisher-sutherland-allsamples_metadata.xlsx", sheet = "metadata_pops")
+
+genos_processed %>%
+  left_join(., meta_pop, by=c("indiv.ID" = "indiv_id")) %>%
+  filter(!str_detect(indiv.ID, "Sample")) %>%
+  count(pop,locus, haplo) %>%
+  group_by(pop,locus) %>%
+  mutate(freq = n / sum(n),
+         n_allele = n(),
+         chrom = str_extract(locus, "NC[0-9]{6}"),
+         pos = str_extract(locus, "_[0-9]{1,8}")%>%str_replace(., "_","")) %>%
+  ungroup() %>%
+  select(chrom, pos, pop,locus, haplo, freq, n_allele) %>%
+  arrange(locus, desc(freq)) %>%
+  group_by(locus) %>%
+  slice(1) %>% ungroup(.) %>% 
+  #filter(pop=="midori") %>%
+  mutate(pos=as.numeric(pos)) %>%
+  ggplot(., aes(x=pos, y=freq)) +
+  geom_point(aes(size=n_allele, colour=n_allele))+
+  #scale_y_continuous(breaks=seq(0,1,0.1)) +
+  theme(axis.text.x = element_text(angle = 70, hjust=1)) +
+  scale_colour_gradientn(colors=terrain.colors(16))+
+  facet_grid(rows = vars(chrom), cols = vars(pop), scales = "free_y")
+```
+
+flip it, do n haps as y axis, allele freq as size --> dont like this. I removed
+the code to keep this cleaner.
+
+make histo of allele richness by pop
+```{r}
+genos_processed %>%
+  left_join(., meta_pop, by=c("indiv.ID" = "indiv_id")) %>%
+  filter(!str_detect(indiv.ID, "Sample")) %>%
+  count(pop,locus, haplo) %>%
+  group_by(pop,locus) %>%
+  mutate(freq = n / sum(n),
+         n_allele = n(),
+         chrom = str_extract(locus, "NC[0-9]{6}"),
+         pos = str_extract(locus, "_[0-9]{1,8}")%>%str_replace(., "_","")) %>%
+  ungroup() %>%
+  select(chrom, pos, pop,locus, haplo, freq, n_allele) %>% 
+  arrange(locus, desc(freq)) %>%
+  group_by(pop,locus) %>%
+  slice(1) %>% ungroup(.) %>% 
+  group_by(pop) %>%
+  count(n_allele) %>%
+  mutate(tot_loci = sum(n),
+         freq_AR = n/tot_loci %>%round(., 1)) %>%
+  ggplot(., aes(x=n_allele, y = freq_AR)) +
+  geom_col(width = 0.75) +
+  scale_x_continuous(name="Number alleles per locus", breaks=seq(1,17,1)) +
+  scale_y_continuous(name = "Proportion of all loci") +
+  facet_grid(rows=vars(pop))
+
+#ggsave(filename="../figure3_manuscript.pdf", height = 4.5, width = 6.5)
+```
+
+can I make the mhap AR by frequency plot cooler? For 'high' power loci does 
+showing all the alleles sized by their frequency work?
+
+```{r}
+af_ar_plots <- function(x) {
+
+  chrom = pull(x)
+  genos_processed %>%
+  left_join(., meta_pop, by=c("indiv.ID" = "indiv_id")) %>%
+  filter(!str_detect(indiv.ID, "Sample"),
+         str_detect(locus, chrom)) %>%
+  count(pop,locus, haplo) %>%
+  group_by(pop,locus) %>%
+  mutate(freq = n / sum(n),
+         n_allele = n(),
+         chrom = str_extract(locus, "NC[0-9]{6}"),
+         pos = str_extract(locus, "_[0-9]{1,8}")%>%str_replace(., "_","")%>%as.numeric(.)) %>%
+  ungroup() %>%
+  arrange(chrom,pos, pop) %>%
+  select(chrom, pos, pop,locus, haplo, freq, n_allele) %>%
+  ggplot(., aes(x=factor(pos), y=freq)) +
+  geom_point(aes( colour=factor(n_allele)))+
+  scale_colour_viridis_d(option="D", name="Number of microhaplotype alleles")+
+  scale_y_continuous(breaks=seq(0,1,0.1), name = "Microhaplotype allele frequency") +
+  theme(axis.text.x = element_text(angle = 70, hjust=1),
+        legend.position = "top")+
+  xlab("Position (base pair coordinate)")+
+  facet_grid(rows = vars(pop), cols = vars(chrom))
+  
+  ggsave(filename = paste0("../figure_supplemental_",x,".pdf"), width = 9, height = 6.5)
+  
+}
+
+chroms2feed <- genos_processed %>% distinct(locus) %>%
+  filter(!is.na(locus))%>%
+  mutate(chrom=str_extract(locus, "^NC[0-9]{6}")) %>%
+  dplyr::select(chrom) %>% distinct(chrom) %>%
+  group_split(chrom)
+
+#map(chroms2feed, af_ar_plots)
+```
+
+```{r}
+genos_processed %>%
+  left_join(., meta_pop, by=c("indiv.ID" = "indiv_id")) %>%
+  filter(!str_detect(indiv.ID, "Sample")) %>%
+  count(pop,locus, haplo) %>%
+  group_by(pop,locus) %>%
+  mutate(freq = n / sum(n),
+         n_allele = n(),
+         chrom = str_extract(locus, "NC[0-9]{6}"),
+         pos = str_extract(locus, "_[0-9]{1,8}")%>%str_replace(., "_","")) %>%
+  ungroup() %>%
+  select(chrom, pos, pop,locus, haplo, freq, n_allele) %>%
+  filter(chrom=="NC047560") %>% 
+  ggplot(., aes(x=pos, y=freq)) +
+  geom_point(aes( colour=factor(n_allele)))+
+  scale_colour_viridis_d(option="D")+
+  scale_y_continuous(breaks=seq(0,1,0.1)) +
+  theme(axis.text.x = element_text(angle = 70, hjust=1)) + 
+  theme(legend.position = "top")+
+  facet_grid(rows = vars(pop), cols = vars(chrom))
+```
+#ok, thats wayyyy to insane to plot 3 pops and all 10 chroms simultaneously,but
+I think this idea has some merit. loci within a few hundred kb are too close to
+get a good sense of (points overlap eachother), but I think this gets a 
+reasonable picture across to the reader.
+
+in processed genotype data how many loci are polymorphic microhaps?
+```{r,filtered-data-marker-type-monomorph-table}
+genos_processed %>%
+  group_by(locus) %>%
+  summarise(n_haplo = n_distinct(haplo),
+            n_nuc = nchar(haplo)%>%unique()) %>% arrange(n_haplo) %>%
+  ungroup() %>%
+  mutate(monomorph = n_haplo==1, 
+         snp= n_nuc==1) %>%
+  count(monomorph,snp) %>% mutate(tot_loc = sum(n))
+```
+
+how many loci in each genotype data frame?
+```{r}
+tom_genos %>% distinct(Locus) %>% nrow(.) #581
+genos_raw %>% distinct(chrom_pos) %>% nrow(.) #483
+genos_processed %>% distinct(locus) %>% nrow(.) #481
+```
+
+how many indivs in each genotype data frame?
+```{r}
+tom_genos %>% distinct(Indiv) %>% nrow(.) #192
+genos_raw %>% distinct(indiv_id) %>% nrow(.) #192
+genos_processed %>% distinct(indiv.ID) %>% nrow(.) #191
+```
+
+one sample was completely removed in the filtering process (microhaplotopia)
+
+#LeFin.
